@@ -435,26 +435,7 @@ pub fn send_command(cmd: Value, session: &str) -> Result<Response, String> {
         match send_command_once(&cmd, session) {
             Ok(response) => return Ok(response),
             Err(e) => {
-                // Check if this is a transient error worth retrying
-                // - OS error 35 (EAGAIN) on macOS, 11 (EAGAIN) on Linux
-                // - EOF errors (daemon closed connection before responding)
-                // - Connection reset/broken pipe (daemon crashed or restarting)
-                // - Connection refused/socket not found (daemon still starting)
-                let is_transient = e.contains("os error 35")
-                    || e.contains("os error 11")
-                    || e.contains("WouldBlock")
-                    || e.contains("Resource temporarily unavailable")
-                    || e.contains("EOF")
-                    || e.contains("line 1 column 0")
-                    || e.contains("Connection reset")
-                    || e.contains("Broken pipe")
-                    || e.contains("os error 54") // Connection reset by peer (macOS)
-                    || e.contains("os error 104") // Connection reset by peer (Linux)
-                    || e.contains("os error 2") // No such file or directory (socket gone)
-                    || e.contains("os error 61") // Connection refused (macOS)
-                    || e.contains("os error 111"); // Connection refused (Linux)
-
-                if is_transient {
+                if is_transient_error(&e) {
                     last_error = e;
                     continue;
                 }
@@ -468,6 +449,28 @@ pub fn send_command(cmd: Value, session: &str) -> Result<Response, String> {
         "{} (after {} retries - daemon may be busy or unresponsive)",
         last_error, MAX_RETRIES
     ))
+}
+
+/// Check if an error is transient and worth retrying.
+/// Transient errors include:
+/// - EAGAIN/EWOULDBLOCK (os error 35 on macOS, 11 on Linux)
+/// - EOF errors (daemon closed connection before responding)
+/// - Connection reset/broken pipe (daemon crashed or restarting)
+/// - Connection refused/socket not found (daemon still starting)
+fn is_transient_error(error: &str) -> bool {
+    error.contains("os error 35") // EAGAIN on macOS
+        || error.contains("os error 11") // EAGAIN on Linux
+        || error.contains("WouldBlock")
+        || error.contains("Resource temporarily unavailable")
+        || error.contains("EOF")
+        || error.contains("line 1 column 0") // Empty JSON response
+        || error.contains("Connection reset")
+        || error.contains("Broken pipe")
+        || error.contains("os error 54") // Connection reset by peer (macOS)
+        || error.contains("os error 104") // Connection reset by peer (Linux)
+        || error.contains("os error 2") // No such file or directory (socket gone)
+        || error.contains("os error 61") // Connection refused (macOS)
+        || error.contains("os error 111") // Connection refused (Linux)
 }
 
 fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
@@ -587,5 +590,99 @@ mod tests {
         assert!(
             result.to_string_lossy().contains("home") || result.to_string_lossy().contains("Users")
         );
+    }
+
+    // === Transient Error Detection Tests ===
+
+    #[test]
+    fn test_is_transient_error_eagain_macos() {
+        assert!(is_transient_error(
+            "Failed to read: Resource temporarily unavailable (os error 35)"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_eagain_linux() {
+        assert!(is_transient_error(
+            "Failed to read: Resource temporarily unavailable (os error 11)"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_would_block() {
+        assert!(is_transient_error("operation WouldBlock"));
+    }
+
+    #[test]
+    fn test_is_transient_error_resource_unavailable() {
+        assert!(is_transient_error("Resource temporarily unavailable"));
+    }
+
+    #[test]
+    fn test_is_transient_error_eof() {
+        assert!(is_transient_error(
+            "Invalid response: EOF while parsing a value at line 1 column 0"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_empty_json() {
+        assert!(is_transient_error(
+            "Invalid response: expected value at line 1 column 0"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_connection_reset() {
+        assert!(is_transient_error("Connection reset by peer"));
+    }
+
+    #[test]
+    fn test_is_transient_error_broken_pipe() {
+        assert!(is_transient_error("Broken pipe"));
+    }
+
+    #[test]
+    fn test_is_transient_error_connection_reset_macos() {
+        assert!(is_transient_error(
+            "Failed to send: Connection reset by peer (os error 54)"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_connection_reset_linux() {
+        assert!(is_transient_error(
+            "Failed to send: Connection reset by peer (os error 104)"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_socket_not_found() {
+        assert!(is_transient_error(
+            "Failed to connect: No such file or directory (os error 2)"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_connection_refused_macos() {
+        assert!(is_transient_error(
+            "Failed to connect: Connection refused (os error 61)"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_connection_refused_linux() {
+        assert!(is_transient_error(
+            "Failed to connect: Connection refused (os error 111)"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_non_transient() {
+        // These should NOT be considered transient
+        assert!(!is_transient_error("Unknown command: foo"));
+        assert!(!is_transient_error("Invalid JSON syntax"));
+        assert!(!is_transient_error("Permission denied"));
+        assert!(!is_transient_error("Daemon not found"));
     }
 }
