@@ -29,6 +29,7 @@ export interface LaunchCommand extends BaseCommand {
   userAgent?: string;
   provider?: string;
   ignoreHTTPSErrors?: boolean;
+  allowFileAccess?: boolean; // Enable file:// URL access and cross-origin file requests
 }
 
 export interface NavigateCommand extends BaseCommand {

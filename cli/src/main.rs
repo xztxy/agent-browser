@@ -205,6 +205,7 @@ fn main() {
         flags.proxy.as_deref(),
         flags.proxy_bypass.as_deref(),
         flags.ignore_https_errors,
+        flags.allow_file_access,
         flags.profile.as_deref(),
         flags.state.as_deref(),
         flags.provider.as_deref(),
@@ -267,6 +268,7 @@ fn main() {
                 None
             },
             flags.ignore_https_errors.then(|| "--ignore-https-errors"),
+            flags.allow_file_access.then(|| "--allow-file-access"),
         ]
         .into_iter()
         .flatten()
@@ -417,7 +419,8 @@ fn main() {
         || flags.state.is_some()
         || flags.proxy.is_some()
         || flags.args.is_some()
-        || flags.user_agent.is_some())
+        || flags.user_agent.is_some()
+        || flags.allow_file_access)
         && flags.cdp.is_none()
         && flags.provider.is_none()
     {
@@ -468,6 +471,10 @@ fn main() {
 
         if flags.ignore_https_errors {
             launch_cmd["ignoreHTTPSErrors"] = json!(true);
+        }
+
+        if flags.allow_file_access {
+            launch_cmd["allowFileAccess"] = json!(true);
         }
 
         match send_command(launch_cmd, &flags.session) {

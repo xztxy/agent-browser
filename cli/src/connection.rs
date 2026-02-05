@@ -213,6 +213,7 @@ pub fn ensure_daemon(
     proxy: Option<&str>,
     proxy_bypass: Option<&str>,
     ignore_https_errors: bool,
+    allow_file_access: bool,
     profile: Option<&str>,
     state: Option<&str>,
     provider: Option<&str>,
@@ -337,6 +338,10 @@ pub fn ensure_daemon(
             cmd.env("AGENT_BROWSER_IGNORE_HTTPS_ERRORS", "1");
         }
 
+        if allow_file_access {
+            cmd.env("AGENT_BROWSER_ALLOW_FILE_ACCESS", "1");
+        }
+
         if let Some(prof) = profile {
             cmd.env("AGENT_BROWSER_PROFILE", prof);
         }
@@ -410,6 +415,10 @@ pub fn ensure_daemon(
 
         if ignore_https_errors {
             cmd.env("AGENT_BROWSER_IGNORE_HTTPS_ERRORS", "1");
+        }
+
+        if allow_file_access {
+            cmd.env("AGENT_BROWSER_ALLOW_FILE_ACCESS", "1");
         }
 
         if let Some(prof) = profile {

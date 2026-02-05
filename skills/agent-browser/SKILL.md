@@ -130,6 +130,15 @@ agent-browser highlight @e1          # Highlight element
 agent-browser record start demo.webm # Record session
 ```
 
+### Local Files (PDFs, HTML)
+
+```bash
+# Open local files with file:// URLs
+agent-browser --allow-file-access open file:///path/to/document.pdf
+agent-browser --allow-file-access open file:///path/to/page.html
+agent-browser screenshot output.png
+```
+
 ### iOS Simulator (Mobile Safari)
 
 ```bash

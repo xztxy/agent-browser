@@ -339,6 +339,7 @@ The `-C` flag is useful for modern web apps that use custom clickable elements (
 | `--headed` | Show browser window (not headless) |
 | `--cdp <port>` | Connect via Chrome DevTools Protocol |
 | `--ignore-https-errors` | Ignore HTTPS certificate errors (useful for self-signed certs) |
+| `--allow-file-access` | Allow file:// URLs to access local files (Chromium only) |
 | `--debug` | Debug output |
 
 ## Selectors
@@ -495,6 +496,27 @@ export async function handler() {
   // ... use browser
 }
 ```
+
+## Local Files
+
+Open and interact with local files (PDFs, HTML, etc.) using `file://` URLs:
+
+```bash
+# Enable file access (required for JavaScript to access local files)
+agent-browser --allow-file-access open file:///path/to/document.pdf
+agent-browser --allow-file-access open file:///path/to/page.html
+
+# Take screenshot of a local PDF
+agent-browser --allow-file-access open file:///Users/me/report.pdf
+agent-browser screenshot report.png
+```
+
+The `--allow-file-access` flag adds Chromium flags (`--allow-file-access-from-files`, `--allow-file-access`) that allow `file://` URLs to:
+- Load and render local files
+- Access other local files via JavaScript (XHR, fetch)
+- Load local resources (images, scripts, stylesheets)
+
+**Note:** This flag only works with Chromium. For security, it's disabled by default.
 
 ## CDP Mode
 
