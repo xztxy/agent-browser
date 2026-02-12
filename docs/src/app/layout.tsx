@@ -8,6 +8,7 @@ import { Sidebar } from "@/components/sidebar";
 import { DocsChat } from "@/components/docs-chat";
 import { cookies } from "next/headers";
 import { SpeedInsights } from "@vercel/speed-insights/next";
+import { Analytics } from "@vercel/analytics/next";
 
 const geist = Geist({
   variable: "--font-geist",
@@ -64,6 +65,7 @@ export default async function RootLayout({
           </MobileNavProvider>
         </ThemeProvider>
         <SpeedInsights />
+        <Analytics />
       </body>
     </html>
   );
