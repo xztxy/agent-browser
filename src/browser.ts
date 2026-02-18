@@ -1847,16 +1847,18 @@ export class BrowserManager {
 
     const dataHandler = (params: { value?: TraceEvent[] }) => {
       if (params.value) {
-        if (this.profileChunks.length >= BrowserManager.MAX_PROFILE_EVENTS) {
-          if (!this.profileEventsDropped) {
-            this.profileEventsDropped = true;
-            console.warn(
-              `Profiling: exceeded ${BrowserManager.MAX_PROFILE_EVENTS} events, dropping further data`
-            );
+        for (const evt of params.value) {
+          if (this.profileChunks.length >= BrowserManager.MAX_PROFILE_EVENTS) {
+            if (!this.profileEventsDropped) {
+              this.profileEventsDropped = true;
+              console.warn(
+                `Profiling: exceeded ${BrowserManager.MAX_PROFILE_EVENTS} events, dropping further data`
+              );
+            }
+            return;
           }
-          return;
+          this.profileChunks.push(evt);
         }
-        this.profileChunks.push(...params.value);
       }
     };
 
@@ -1933,8 +1935,10 @@ export class BrowserManager {
 
     await cdp.send('Tracing.end');
 
+    let chunks: TraceEvent[];
     try {
       await completePromise;
+      chunks = this.profileChunks;
     } finally {
       if (this.profileDataHandler) {
         cdp.off('Tracing.dataCollected', this.profileDataHandler);
@@ -1942,6 +1946,12 @@ export class BrowserManager {
       if (this.profileCompleteHandler) {
         cdp.off('Tracing.tracingComplete', this.profileCompleteHandler);
       }
+      this.profilingActive = false;
+      this.profileChunks = [];
+      this.profileEventsDropped = false;
+      this.profileCompleteResolver = null;
+      this.profileDataHandler = null;
+      this.profileCompleteHandler = null;
     }
 
     const clockDomain =
@@ -1952,7 +1962,7 @@ export class BrowserManager {
           : undefined;
 
     const traceData: Record<string, unknown> = {
-      traceEvents: this.profileChunks,
+      traceEvents: chunks,
     };
     if (clockDomain) {
       traceData.metadata = { 'clock-domain': clockDomain };
@@ -1963,14 +1973,7 @@ export class BrowserManager {
 
     await writeFile(outputPath, JSON.stringify(traceData));
 
-    const eventCount = this.profileChunks.length;
-
-    this.profilingActive = false;
-    this.profileChunks = [];
-    this.profileEventsDropped = false;
-    this.profileCompleteResolver = null;
-    this.profileDataHandler = null;
-    this.profileCompleteHandler = null;
+    const eventCount = chunks.length;
 
     return { path: outputPath, eventCount };
   }
