@@ -423,7 +423,46 @@ The `-C` flag is useful for modern web apps that use custom clickable elements (
 | `--headed` | Show browser window (not headless) |
 | `--cdp <port\|url>` | Connect via Chrome DevTools Protocol (port or WebSocket URL) |
 | `--auto-connect` | Auto-discover and connect to running Chrome (or `AGENT_BROWSER_AUTO_CONNECT` env) |
+| `--config <path>` | Use a custom config file (or `AGENT_BROWSER_CONFIG` env) |
 | `--debug` | Debug output |
+
+## Configuration
+
+Create an `agent-browser.json` file to set persistent defaults instead of repeating flags on every command.
+
+**Locations (lowest to highest priority):**
+
+1. `~/.agent-browser/config.json` -- user-level defaults
+2. `./agent-browser.json` -- project-level overrides (in working directory)
+3. `AGENT_BROWSER_*` environment variables override config file values
+4. CLI flags override everything
+
+**Example `agent-browser.json`:**
+
+```json
+{
+  "headed": true,
+  "proxy": "http://localhost:8080",
+  "profile": "./browser-data",
+  "userAgent": "my-agent/1.0",
+  "ignoreHttpsErrors": true
+}
+```
+
+Use `--config <path>` or `AGENT_BROWSER_CONFIG` to load a specific config file instead of the defaults:
+
+```bash
+agent-browser --config ./ci-config.json open example.com
+AGENT_BROWSER_CONFIG=./ci-config.json agent-browser open example.com
+```
+
+All options from the table above can be set in the config file using camelCase keys (e.g., `--executable-path` becomes `"executablePath"`, `--proxy-bypass` becomes `"proxyBypass"`). Unknown keys are ignored for forward compatibility.
+
+Boolean flags accept an optional `true`/`false` value to override config settings. For example, `--headed false` disables `"headed": true` from config. A bare `--headed` is equivalent to `--headed true`.
+
+Auto-discovered config files that are missing are silently ignored. If `--config <path>` points to a missing or invalid file, agent-browser exits with an error. Extensions from user and project configs are merged (concatenated), not replaced.
+
+> **Tip:** If your project-level `agent-browser.json` contains environment-specific values (paths, proxies), consider adding it to `.gitignore`.
 
 ## Selectors
 

@@ -21,6 +21,7 @@ export const navigation: NavSection[] = [
     title: "Reference",
     items: [
       { name: "Commands", href: "/commands" },
+      { name: "Configuration", href: "/configuration" },
       { name: "Selectors", href: "/selectors" },
       { name: "Snapshots", href: "/snapshots" },
     ],
