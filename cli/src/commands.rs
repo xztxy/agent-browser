@@ -392,7 +392,7 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                 _ => (None, None),
             };
             Ok(
-                json!({ "id": id, "action": "screenshot", "path": path, "selector": selector, "fullPage": flags.full }),
+                json!({ "id": id, "action": "screenshot", "path": path, "selector": selector, "fullPage": flags.full, "annotate": flags.annotate }),
             )
         }
         "pdf" => {
