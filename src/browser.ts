@@ -17,7 +17,8 @@ import {
 import path from 'node:path';
 import os from 'node:os';
 import { existsSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
-import type { LaunchCommand } from './types.js';
+import { writeFile, mkdir } from 'node:fs/promises';
+import type { LaunchCommand, TraceEvent } from './types.js';
 import { type RefMap, type EnhancedSnapshot, getEnhancedSnapshot, parseRef } from './snapshot.js';
 import { safeHeaderMerge } from './state-utils.js';
 import {
@@ -122,9 +123,9 @@ export class BrowserManager {
 
   // CDP profiling state
   private profilingActive: boolean = false;
-  private profileChunks: any[] = [];
+  private profileChunks: TraceEvent[] = [];
   private profileCompleteResolver: (() => void) | null = null;
-  private profileDataHandler: ((params: any) => void) | null = null;
+  private profileDataHandler: ((params: { value?: TraceEvent[] }) => void) | null = null;
   private profileCompleteHandler: (() => void) | null = null;
 
   /**
@@ -1841,51 +1842,59 @@ export class BrowserManager {
     }
 
     const cdp = await this.getCDPSession();
-    this.profilingActive = true;
-    this.profileChunks = [];
 
-    // Set up event handlers
-    this.profileDataHandler = (params: any) => {
+    const dataHandler = (params: { value?: TraceEvent[] }) => {
       if (params.value) {
         this.profileChunks.push(...params.value);
       }
     };
 
-    this.profileCompleteHandler = () => {
+    const completeHandler = () => {
       if (this.profileCompleteResolver) {
         this.profileCompleteResolver();
       }
     };
 
-    cdp.on('Tracing.dataCollected', this.profileDataHandler);
-    cdp.on('Tracing.tracingComplete', this.profileCompleteHandler);
+    cdp.on('Tracing.dataCollected', dataHandler);
+    cdp.on('Tracing.tracingComplete', completeHandler);
 
-    // Default categories for useful profiling data
     const categories = options?.categories ?? [
-      'devtools.timeline', // "normal" devtools performance traces
-      'disabled-by-default-devtools.timeline', // more detailed timeline instrumentation
-      'disabled-by-default-devtools.timeline.frame', // useful for per-frame analysis
-      'disabled-by-default-devtools.timeline.stack', // necessary for understanding call stack
-      'v8.execute', // captures time spent running JS
-      'disabled-by-default-v8.cpu_profiler', // sampling-based profiling for hotspot detection
-      'disabled-by-default-v8.cpu_profiler.hires', // higher-resolution samples on above
-      'v8', // captures v8 internals
-      'disabled-by-default-v8.runtime_stats', // JS runtime call stats
-      'blink', // get all renderer events
-      'blink.user_timing', // user-recorded performance measurements (performance.mark, performance.measure)
-      'latencyInfo', // input-to-latency tracking
-      'renderer.scheduler', // show how tasks are scheduled/executed
-      'sequence_manager', // attribute latency to task queues
-      'toplevel', // broad-spectrum basic events
+      'devtools.timeline',
+      'disabled-by-default-devtools.timeline',
+      'disabled-by-default-devtools.timeline.frame',
+      'disabled-by-default-devtools.timeline.stack',
+      'v8.execute',
+      'disabled-by-default-v8.cpu_profiler',
+      'disabled-by-default-v8.cpu_profiler.hires',
+      'v8',
+      'disabled-by-default-v8.runtime_stats',
+      'blink',
+      'blink.user_timing',
+      'latencyInfo',
+      'renderer.scheduler',
+      'sequence_manager',
+      'toplevel',
     ];
 
-    await cdp.send('Tracing.start', {
-      traceConfig: {
-        includedCategories: categories,
-        enableSampling: true,
-      },
-      transferMode: 'ReportEvents', // Data arrives via Tracing.dataCollected events
-    });
+    try {
+      await cdp.send('Tracing.start', {
+        traceConfig: {
+          includedCategories: categories,
+          enableSampling: true,
+        },
+        transferMode: 'ReportEvents',
+      });
+    } catch (error) {
+      cdp.off('Tracing.dataCollected', dataHandler);
+      cdp.off('Tracing.tracingComplete', completeHandler);
+      throw error;
+    }
+
+    // Only commit state after the CDP call succeeds
+    this.profilingActive = true;
+    this.profileChunks = [];
+    this.profileDataHandler = dataHandler;
+    this.profileCompleteHandler = completeHandler;
   }
 
   /**
@@ -1898,45 +1907,46 @@ export class BrowserManager {
 
     const cdp = await this.getCDPSession();
 
-    // Create promise to wait for tracingComplete
-    const completePromise = new Promise<void>((resolve) => {
+    const TRACE_TIMEOUT_MS = 30_000;
+    const completePromise = new Promise<void>((resolve, reject) => {
       this.profileCompleteResolver = resolve;
+      setTimeout(() => reject(new Error('Profiling data collection timed out')), TRACE_TIMEOUT_MS);
     });
 
-    // Signal end of tracing
     await cdp.send('Tracing.end');
 
-    // Wait for all data to be collected
-    await completePromise;
-
-    // Clean up event handlers
-    if (this.profileDataHandler) {
-      cdp.off('Tracing.dataCollected', this.profileDataHandler);
+    try {
+      await completePromise;
+    } finally {
+      if (this.profileDataHandler) {
+        cdp.off('Tracing.dataCollected', this.profileDataHandler);
+      }
+      if (this.profileCompleteHandler) {
+        cdp.off('Tracing.tracingComplete', this.profileCompleteHandler);
+      }
     }
-    if (this.profileCompleteHandler) {
-      cdp.off('Tracing.tracingComplete', this.profileCompleteHandler);
-    }
 
-    // Write trace data to file
-    const traceData = {
+    const clockDomain =
+      process.platform === 'linux'
+        ? 'LINUX_CLOCK_MONOTONIC'
+        : process.platform === 'darwin'
+          ? 'MAC_MACH_ABSOLUTE_TIME'
+          : undefined;
+
+    const traceData: Record<string, unknown> = {
       traceEvents: this.profileChunks,
-      metadata: {
-        'clock-domain': 'LINUX_CLOCK_MONOTONIC',
-      },
     };
+    if (clockDomain) {
+      traceData.metadata = { 'clock-domain': clockDomain };
+    }
 
-    const fs = await import('node:fs/promises');
-    const pathModule = await import('node:path');
+    const dir = path.dirname(outputPath);
+    await mkdir(dir, { recursive: true }).catch(() => {});
 
-    // Ensure directory exists
-    const dir = pathModule.dirname(outputPath);
-    await fs.mkdir(dir, { recursive: true }).catch(() => {});
-
-    await fs.writeFile(outputPath, JSON.stringify(traceData));
+    await writeFile(outputPath, JSON.stringify(traceData));
 
     const eventCount = this.profileChunks.length;
 
-    // Reset state
     this.profilingActive = false;
     this.profileChunks = [];
     this.profileCompleteResolver = null;

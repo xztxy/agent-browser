@@ -258,6 +258,8 @@ agent-browser dialog dismiss          # Dismiss
 ```bash
 agent-browser trace start [path]      # Start recording trace
 agent-browser trace stop [path]       # Stop and save trace
+agent-browser profiler start          # Start Chrome DevTools profiling
+agent-browser profiler stop <path>    # Stop and save profile (.json)
 agent-browser console                 # View console messages (log, error, warn, info)
 agent-browser console --clear         # Clear console
 agent-browser errors                  # View page errors (uncaught JavaScript exceptions)

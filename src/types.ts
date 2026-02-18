@@ -580,6 +580,18 @@ export interface TraceStopCommand extends BaseCommand {
 }
 
 // CDP Profiling (Chrome DevTools trace format)
+export interface TraceEvent {
+  cat?: string;
+  name?: string;
+  ph?: string;
+  pid?: number;
+  tid?: number;
+  ts?: number;
+  dur?: number;
+  args?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface ProfilerStartCommand extends BaseCommand {
   action: 'profiler_start';
   categories?: string[]; // Optional trace categories (e.g., "devtools.timeline")

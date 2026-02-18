@@ -768,7 +768,7 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         // === Profiler (CDP Tracing / Chromium profiling) ===
         "profiler" => {
             const VALID: &[&str] = &["start", "stop"];
-            match rest.get(0).map(|s| *s) {
+            match rest.first().copied() {
                 Some("start") => {
                     let mut cmd = json!({ "id": id, "action": "profiler_start" });
                     // Parse optional --categories flag

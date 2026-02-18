@@ -1496,8 +1496,8 @@ Operations:
   stop <path>          Stop profiling and save to file
 
 Start Options:
-  --categories <list>  Comma-separated trace categories
-                       Default: devtools.timeline,v8.execute,blink.console
+  --categories <list>  Comma-separated trace categories (default includes
+                       devtools.timeline, v8.execute, blink, and others)
 
 Global Options:
   --json               Output as JSON

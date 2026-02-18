@@ -162,6 +162,8 @@ agent-browser --cdp 9222 snapshot
 agent-browser --headed open https://example.com
 agent-browser highlight @e1          # Highlight element
 agent-browser record start demo.webm # Record session
+agent-browser profiler start         # Start Chrome DevTools profiling
+agent-browser profiler stop trace.json # Stop and save profile
 ```
 
 ### Local Files (PDFs, HTML)
@@ -323,6 +325,7 @@ Priority (lowest to highest): `~/.agent-browser/config.json` < `./agent-browser.
 | [references/session-management.md](references/session-management.md) | Parallel sessions, state persistence, concurrent scraping |
 | [references/authentication.md](references/authentication.md) | Login flows, OAuth, 2FA handling, state reuse |
 | [references/video-recording.md](references/video-recording.md) | Recording workflows for debugging and documentation |
+| [references/profiling.md](references/profiling.md) | Chrome DevTools profiling for performance analysis |
 | [references/proxy-support.md](references/proxy-support.md) | Proxy configuration, geo-testing, rotating proxies |
 
 ## Ready-to-Use Templates

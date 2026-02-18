@@ -894,18 +894,12 @@ describe('BrowserManager', () => {
     });
 
     it('should throw when starting profiling twice', async () => {
-      // Profiling might still be active from previous test
-      if (!browser.isProfilingActive()) {
-        await browser.startProfiling();
-      }
+      await browser.startProfiling();
       await expect(browser.startProfiling()).rejects.toThrow('Profiling already active');
     });
 
     it('should stop profiling and write file', async () => {
-      // Ensure profiling is active (might still be active from previous test)
-      if (!browser.isProfilingActive()) {
-        await browser.startProfiling();
-      }
+      await browser.startProfiling();
 
       const outputPath = path.join(testOutputDir, 'test-profile.json');
       const result = await browser.stopProfiling(outputPath);

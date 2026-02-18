@@ -32,6 +32,7 @@ export const navigation: NavSection[] = [
       { name: "Sessions", href: "/sessions" },
       { name: "CDP Mode", href: "/cdp-mode" },
       { name: "Streaming", href: "/streaming" },
+      { name: "Profiler", href: "/profiler" },
       { name: "iOS Simulator", href: "/ios" },
     ],
   },

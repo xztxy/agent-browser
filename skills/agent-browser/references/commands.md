@@ -247,6 +247,8 @@ agent-browser errors --clear              # Clear errors
 agent-browser highlight @e1               # Highlight element
 agent-browser trace start                 # Start recording trace
 agent-browser trace stop trace.zip        # Stop and save trace
+agent-browser profiler start              # Start Chrome DevTools profiling
+agent-browser profiler stop trace.json    # Stop and save profile
 ```
 
 ## Environment Variables
