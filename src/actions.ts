@@ -765,10 +765,9 @@ async function handleScreenshot(
           },
         }));
       } else if (command.fullPage) {
-        const scroll = await page.evaluate(() => ({
-          x: window.scrollX || 0,
-          y: window.scrollY || 0,
-        }));
+        const scroll = (await page.evaluate(
+          `({x: window.scrollX || 0, y: window.scrollY || 0})`
+        )) as { x: number; y: number };
         annotations = overlayItems.map((a) => ({
           ...a,
           box: {
