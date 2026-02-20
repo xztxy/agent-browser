@@ -2522,20 +2522,22 @@ async function handleDiffScreenshot(
   }
 
   const page = browser.getPage();
-  let target: Page | ReturnType<Page['locator']> = page;
+  let screenshotBuffer: Buffer;
   if (command.selector) {
     const locator = browser.getLocatorFromRef(command.selector) || page.locator(command.selector);
-    target = locator;
+    screenshotBuffer = await locator.screenshot({ type: 'png' });
+  } else {
+    screenshotBuffer = await page.screenshot({ fullPage: command.fullPage, type: 'png' });
   }
 
-  const screenshotBuffer = await (target as Page).screenshot({
-    fullPage: command.fullPage,
-    type: 'png',
-  });
+  const baselineBuffer = fs.readFileSync(command.baseline);
+  const ext = path.extname(command.baseline).toLowerCase();
+  const baselineMime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
 
-  const result = await diffScreenshots(page, command.baseline, screenshotBuffer, {
+  const result = await diffScreenshots(page, baselineBuffer, screenshotBuffer, {
     threshold: command.threshold,
     outputPath: command.output,
+    baselineMime,
   });
 
   return successResponse(command.id, result);
@@ -2564,25 +2566,7 @@ async function handleDiffUrl(command: DiffUrlCommand, browser: BrowserManager): 
 
   if (command.screenshot && screenshot1) {
     const screenshot2 = await page.screenshot({ fullPage: command.fullPage, type: 'png' });
-    // Write screenshot1 to a temp file for the diffScreenshots function
-    const tmpDir = path.join(
-      process.env.HOME || process.env.USERPROFILE || '/tmp',
-      '.agent-browser',
-      'tmp',
-      'diffs'
-    );
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const tmpBaseline = path.join(tmpDir, `baseline-${Date.now()}.png`);
-    fs.writeFileSync(tmpBaseline, screenshot1);
-    try {
-      result.screenshot = await diffScreenshots(page, tmpBaseline, screenshot2, {});
-    } finally {
-      try {
-        fs.unlinkSync(tmpBaseline);
-      } catch {
-        // ignore cleanup errors
-      }
-    }
+    result.screenshot = await diffScreenshots(page, screenshot1, screenshot2, {});
   }
 
   return successResponse(command.id, result);

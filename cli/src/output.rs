@@ -27,150 +27,39 @@ pub fn print_response(resp: &Response, json_mode: bool, action: Option<&str>) {
             println!("{}", url);
             return;
         }
-        // Snapshot
-        if let Some(snapshot) = data.get("snapshot").and_then(|v| v.as_str()) {
-            // Plain snapshot response (not diff)
-            if data.get("diff").is_none() && data.get("changed").is_none() {
-                println!("{}", snapshot);
-                return;
-            }
-        }
-        // Diff snapshot response
-        if let Some(diff) = data.get("diff").and_then(|v| v.as_str()) {
-            if data.get("changed").is_some() {
-                let changed = data
-                    .get("changed")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if !changed {
-                    println!("{} No changes detected", color::success_indicator());
-                } else {
-                    for line in diff.lines() {
-                        if line.starts_with("+ ") {
-                            println!("{}", color::green(line));
-                        } else if line.starts_with("- ") {
-                            println!("{}", color::red(line));
-                        } else {
-                            println!("{}", color::dim(line));
-                        }
-                    }
-                    let additions = data.get("additions").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let removals = data.get("removals").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let unchanged = data.get("unchanged").and_then(|v| v.as_i64()).unwrap_or(0);
-                    println!(
-                        "\n{} additions, {} removals, {} unchanged",
-                        color::green(&additions.to_string()),
-                        color::red(&removals.to_string()),
-                        unchanged
-                    );
+        // Diff responses -- route by action to avoid fragile shape probing
+        if let Some(obj) = data.as_object() {
+            match action {
+                Some("diff_snapshot") => {
+                    print_snapshot_diff(obj);
+                    return;
                 }
-                return;
-            }
-        }
-        // Diff screenshot response
-        if let Some(diff_path) = data.get("diffPath").and_then(|v| v.as_str()) {
-            let mismatch = data
-                .get("mismatchPercentage")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            let is_match = data
-                .get("match")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let dim_mismatch = data
-                .get("dimensionMismatch")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if dim_mismatch {
-                println!(
-                    "{} Images have different dimensions",
-                    color::error_indicator()
-                );
-            } else if is_match {
-                println!("{} Images match (0% difference)", color::success_indicator());
-            } else {
-                println!(
-                    "{} {:.2}% pixels differ",
-                    color::error_indicator(),
-                    mismatch
-                );
-            }
-            println!("  Diff image: {}", color::green(diff_path));
-            let total = data.get("totalPixels").and_then(|v| v.as_i64()).unwrap_or(0);
-            let different = data
-                .get("differentPixels")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            println!(
-                "  {} different / {} total pixels",
-                color::red(&different.to_string()),
-                total
-            );
-            return;
-        }
-        // Diff url response (contains nested snapshot + optional screenshot)
-        if data.get("snapshot").is_some() && data.get("changed").is_none() {
-            if let Some(snap_data) = data.get("snapshot").and_then(|v| v.as_object()) {
-                if snap_data.get("diff").is_some() {
-                    println!("{}", color::bold("Snapshot diff:"));
-                    let changed = snap_data
-                        .get("changed")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    if !changed {
-                        println!("  {}", color::dim("No changes"));
-                    } else if let Some(diff) = snap_data.get("diff").and_then(|v| v.as_str()) {
-                        for line in diff.lines() {
-                            if line.starts_with("+ ") {
-                                println!("{}", color::green(line));
-                            } else if line.starts_with("- ") {
-                                println!("{}", color::red(line));
-                            } else {
-                                println!("{}", color::dim(line));
-                            }
-                        }
-                        let additions =
-                            snap_data.get("additions").and_then(|v| v.as_i64()).unwrap_or(0);
-                        let removals =
-                            snap_data.get("removals").and_then(|v| v.as_i64()).unwrap_or(0);
-                        let unchanged =
-                            snap_data.get("unchanged").and_then(|v| v.as_i64()).unwrap_or(0);
-                        println!(
-                            "\n{} additions, {} removals, {} unchanged",
-                            color::green(&additions.to_string()),
-                            color::red(&removals.to_string()),
-                            unchanged
-                        );
+                Some("diff_screenshot") => {
+                    print_screenshot_diff(obj);
+                    return;
+                }
+                Some("diff_url") => {
+                    if let Some(snap_data) =
+                        obj.get("snapshot").and_then(|v| v.as_object())
+                    {
+                        println!("{}", color::bold("Snapshot diff:"));
+                        print_snapshot_diff(snap_data);
                     }
-                    if let Some(ss_data) = data.get("screenshot").and_then(|v| v.as_object()) {
+                    if let Some(ss_data) =
+                        obj.get("screenshot").and_then(|v| v.as_object())
+                    {
                         println!("\n{}", color::bold("Screenshot diff:"));
-                        let mismatch = ss_data
-                            .get("mismatchPercentage")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0);
-                        let is_match = ss_data
-                            .get("match")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        if is_match {
-                            println!(
-                                "  {} Images match (0% difference)",
-                                color::success_indicator()
-                            );
-                        } else {
-                            println!(
-                                "  {} {:.2}% pixels differ",
-                                color::error_indicator(),
-                                mismatch
-                            );
-                        }
-                        if let Some(p) = ss_data.get("diffPath").and_then(|v| v.as_str()) {
-                            println!("  Diff image: {}", color::green(p));
-                        }
+                        print_screenshot_diff(ss_data);
                     }
                     return;
                 }
+                _ => {}
             }
+        }
+        // Snapshot
+        if let Some(snapshot) = data.get("snapshot").and_then(|v| v.as_str()) {
+            println!("{}", snapshot);
+            return;
         }
         // Title
         if let Some(title) = data.get("title").and_then(|v| v.as_str()) {
@@ -2250,6 +2139,79 @@ iOS Simulator (requires Xcode and Appium):
   agent-browser -p ios swipe up                            # Swipe gesture
   agent-browser -p ios tap @e1                             # Touch element
 "#
+    );
+}
+
+fn print_snapshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
+    let changed = data
+        .get("changed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !changed {
+        println!("{} No changes detected", color::success_indicator());
+        return;
+    }
+    if let Some(diff) = data.get("diff").and_then(|v| v.as_str()) {
+        for line in diff.lines() {
+            if line.starts_with("+ ") {
+                println!("{}", color::green(line));
+            } else if line.starts_with("- ") {
+                println!("{}", color::red(line));
+            } else {
+                println!("{}", color::dim(line));
+            }
+        }
+        let additions = data.get("additions").and_then(|v| v.as_i64()).unwrap_or(0);
+        let removals = data.get("removals").and_then(|v| v.as_i64()).unwrap_or(0);
+        let unchanged = data.get("unchanged").and_then(|v| v.as_i64()).unwrap_or(0);
+        println!(
+            "\n{} additions, {} removals, {} unchanged",
+            color::green(&additions.to_string()),
+            color::red(&removals.to_string()),
+            unchanged
+        );
+    }
+}
+
+fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
+    let mismatch = data
+        .get("mismatchPercentage")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let is_match = data
+        .get("match")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dim_mismatch = data
+        .get("dimensionMismatch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if dim_mismatch {
+        println!(
+            "{} Images have different dimensions",
+            color::error_indicator()
+        );
+    } else if is_match {
+        println!("{} Images match (0% difference)", color::success_indicator());
+    } else {
+        println!(
+            "{} {:.2}% pixels differ",
+            color::error_indicator(),
+            mismatch
+        );
+    }
+    if let Some(diff_path) = data.get("diffPath").and_then(|v| v.as_str()) {
+        println!("  Diff image: {}", color::green(diff_path));
+    }
+    let total = data.get("totalPixels").and_then(|v| v.as_i64()).unwrap_or(0);
+    let different = data
+        .get("differentPixels")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    println!(
+        "  {} different / {} total pixels",
+        color::red(&different.to_string()),
+        total
     );
 }
 

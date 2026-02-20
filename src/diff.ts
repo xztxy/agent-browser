@@ -1,6 +1,5 @@
 import type { Page } from 'playwright-core';
 import type { DiffSnapshotData, DiffScreenshotData } from './types.js';
-import { readFileSync } from 'node:fs';
 import { writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -173,44 +172,46 @@ interface PixelDiffResult {
 }
 
 /**
- * Compare a baseline image file against a current screenshot buffer,
- * using the browser's Canvas API for pixel comparison.
+ * Compare two image buffers using the browser's Canvas API for pixel comparison.
  */
 export async function diffScreenshots(
   page: Page,
-  baselinePath: string,
+  baselineBuffer: Buffer,
   currentBuffer: Buffer,
-  opts: { threshold?: number; outputPath?: string }
+  opts: { threshold?: number; outputPath?: string; baselineMime?: string }
 ): Promise<DiffScreenshotData> {
-  const baselineBuffer = readFileSync(baselinePath);
   const baselineB64 = baselineBuffer.toString('base64');
   const currentB64 = currentBuffer.toString('base64');
-
-  const baselineExt = path.extname(baselinePath).toLowerCase();
-  const baselineMime =
-    baselineExt === '.jpg' || baselineExt === '.jpeg' ? 'image/jpeg' : 'image/png';
+  const baselineMime = opts.baselineMime ?? 'image/png';
 
   const threshold = opts.threshold ?? 0.1;
 
-  // Runs entirely in the browser context via page.evaluate().
-  // Uses a JS string to avoid TypeScript DOM type-checking issues.
-  const args = JSON.stringify({ baselineB64, currentB64, baselineMime, threshold });
-  const result: PixelDiffResult = await page.evaluate(`(async () => {
-    const { baselineB64, currentB64, baselineMime, threshold } = ${args};
-    function loadImage(dataUrl) {
+  // Pixel comparison runs in the browser via Canvas API to avoid native image dependencies.
+  // Uses page.evaluate with structured args for proper serialization of large base64 strings.
+  // DOM globals are aliased via globalThis to satisfy the Node-only TypeScript environment.
+  const pixelDiffFn = async (args: {
+    baselineB64: string;
+    currentB64: string;
+    baselineMime: string;
+    threshold: number;
+  }) => {
+    const g = globalThis as any;
+    const doc = g.document;
+    const Img = g.Image as new () => any;
+    function loadImage(dataUrl: string) {
       return new Promise((resolve, reject) => {
-        const img = new Image();
+        const img = new Img();
         img.onload = () => resolve(img);
         img.onerror = () => reject(new Error('Failed to load image'));
         img.src = dataUrl;
       });
     }
-    const [imgA, imgB] = await Promise.all([
-      loadImage('data:' + baselineMime + ';base64,' + baselineB64),
-      loadImage('data:image/png;base64,' + currentB64),
-    ]);
+    const [imgA, imgB] = (await Promise.all([
+      loadImage('data:' + args.baselineMime + ';base64,' + args.baselineB64),
+      loadImage('data:image/png;base64,' + args.currentB64),
+    ])) as any[];
     if (imgA.width !== imgB.width || imgA.height !== imgB.height) {
-      const c = document.createElement('canvas');
+      const c = doc.createElement('canvas');
       c.width = 1;
       c.height = 1;
       return {
@@ -223,44 +224,50 @@ export async function diffScreenshots(
     }
     const w = imgA.width;
     const h = imgA.height;
-    const canvasA = document.createElement('canvas');
+    const canvasA = doc.createElement('canvas');
     canvasA.width = w;
     canvasA.height = h;
-    const ctxA = canvasA.getContext('2d');
+    const ctxA = canvasA.getContext('2d')!;
     ctxA.drawImage(imgA, 0, 0);
     const dataA = ctxA.getImageData(0, 0, w, h).data;
-    const canvasB = document.createElement('canvas');
+    const canvasB = doc.createElement('canvas');
     canvasB.width = w;
     canvasB.height = h;
-    const ctxB = canvasB.getContext('2d');
+    const ctxB = canvasB.getContext('2d')!;
     ctxB.drawImage(imgB, 0, 0);
     const dataB = ctxB.getImageData(0, 0, w, h).data;
-    const diffCanvas = document.createElement('canvas');
+    const diffCanvas = doc.createElement('canvas');
     diffCanvas.width = w;
     diffCanvas.height = h;
-    const ctxDiff = diffCanvas.getContext('2d');
+    const ctxDiff = diffCanvas.getContext('2d')!;
     const diffImageData = ctxDiff.createImageData(w, h);
     const diffData = diffImageData.data;
-    const maxColorDistance = threshold * 255 * Math.sqrt(3);
+    const maxColorDistance = args.threshold * 255 * Math.sqrt(3);
     let differentPixels = 0;
     const totalPixels = w * h;
     for (let i = 0; i < totalPixels; i++) {
       const offset = i * 4;
-      const rA = dataA[offset], gA = dataA[offset+1], bA = dataA[offset+2];
-      const rB = dataB[offset], gB = dataB[offset+1], bB = dataB[offset+2];
-      const dr = rA - rB, dg = gA - gB, db = bA - bB;
-      const dist = Math.sqrt(dr*dr + dg*dg + db*db);
+      const rA = dataA[offset],
+        gA = dataA[offset + 1],
+        bA = dataA[offset + 2];
+      const rB = dataB[offset],
+        gB = dataB[offset + 1],
+        bB = dataB[offset + 2];
+      const dr = rA - rB,
+        dg = gA - gB,
+        db = bA - bB;
+      const dist = Math.sqrt(dr * dr + dg * dg + db * db);
       if (dist > maxColorDistance) {
         differentPixels++;
         diffData[offset] = 255;
-        diffData[offset+1] = 0;
-        diffData[offset+2] = 0;
-        diffData[offset+3] = 255;
+        diffData[offset + 1] = 0;
+        diffData[offset + 2] = 0;
+        diffData[offset + 3] = 255;
       } else {
         diffData[offset] = Math.round(rA * 0.3);
-        diffData[offset+1] = Math.round(gA * 0.3);
-        diffData[offset+2] = Math.round(bA * 0.3);
-        diffData[offset+3] = 255;
+        diffData[offset + 1] = Math.round(gA * 0.3);
+        diffData[offset + 2] = Math.round(bA * 0.3);
+        diffData[offset + 3] = 255;
       }
     }
     ctxDiff.putImageData(diffImageData, 0, 0);
@@ -272,7 +279,13 @@ export async function diffScreenshots(
       diffBase64,
       dimensionMismatch: false,
     };
-  })()`);
+  };
+  const result = (await page.evaluate(pixelDiffFn, {
+    baselineB64,
+    currentB64,
+    baselineMime,
+    threshold,
+  })) as PixelDiffResult;
 
   let outputPath = opts.outputPath;
   if (!outputPath) {

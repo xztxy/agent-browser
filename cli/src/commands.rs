@@ -1078,6 +1078,12 @@ fn parse_diff(rest: &[&str], id: &str, flags: &Flags) -> Result<Value, ParseErro
                             }
                         }
                     }
+                    other if other.starts_with('-') => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unknown flag: {}", other),
+                            usage: "diff snapshot [--baseline <file>] [--selector <sel>] [--compact] [--depth <n>]",
+                        });
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -1119,6 +1125,12 @@ fn parse_diff(rest: &[&str], id: &str, flags: &Flags) -> Result<Value, ParseErro
                     "--full" => {
                         obj.insert("fullPage".to_string(), json!(true));
                     }
+                    other if other.starts_with('-') => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unknown flag: {}", other),
+                            usage: "diff screenshot --baseline <file> [--output <file>] [--threshold <0-1>] [--selector <sel>] [--full]",
+                        });
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -1155,6 +1167,12 @@ fn parse_diff(rest: &[&str], id: &str, flags: &Flags) -> Result<Value, ParseErro
                     }
                     "--full" => {
                         obj.insert("fullPage".to_string(), json!(true));
+                    }
+                    other if other.starts_with('-') => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unknown flag: {}", other),
+                            usage: "diff url <url1> <url2> [--screenshot] [--full]",
+                        });
                     }
                     _ => {}
                 }
