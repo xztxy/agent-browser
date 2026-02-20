@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { diffSnapshots } from './diff.js';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { diffSnapshots, diffScreenshots } from './diff.js';
+import { chromium, type Browser, type Page } from 'playwright-core';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 describe('diffSnapshots', () => {
   it('should report no changes for identical inputs', () => {
@@ -107,5 +111,78 @@ describe('diffSnapshots', () => {
     const result = diffSnapshots(before, after);
     expect(result.changed).toBe(true);
     expect(result.additions).toBeGreaterThanOrEqual(3);
+  });
+});
+
+const canLaunchBrowser = await (async () => {
+  try {
+    const b = await chromium.launch({ headless: true });
+    await b.close();
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!canLaunchBrowser)('diffScreenshots', () => {
+  let browser: Browser;
+  let page: Page;
+
+  beforeAll(async () => {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 200, height: 200 } });
+    page = await context.newPage();
+  });
+
+  afterAll(async () => {
+    await browser.close();
+  });
+
+  async function screenshotOfColor(color: string): Promise<Buffer> {
+    await page.setContent(`<div style="width:200px;height:200px;background:${color}"></div>`);
+    return await page.screenshot({ type: 'png' });
+  }
+
+  it('should report match for identical images', async () => {
+    const img = await screenshotOfColor('red');
+    const result = await diffScreenshots(page, img, img, {});
+    expect(result.match).toBe(true);
+    expect(result.differentPixels).toBe(0);
+    expect(result.mismatchPercentage).toBe(0);
+    expect(result.dimensionMismatch).toBeUndefined();
+    if (result.diffPath) fs.unlinkSync(result.diffPath);
+  });
+
+  it('should detect differences between distinct images', async () => {
+    const imgA = await screenshotOfColor('red');
+    const imgB = await screenshotOfColor('blue');
+    const result = await diffScreenshots(page, imgA, imgB, {});
+    expect(result.match).toBe(false);
+    expect(result.differentPixels).toBeGreaterThan(0);
+    expect(result.mismatchPercentage).toBeGreaterThan(0);
+    if (result.diffPath) fs.unlinkSync(result.diffPath);
+  });
+
+  it('should detect dimension mismatch', async () => {
+    const imgA = await screenshotOfColor('white');
+    await page.setViewportSize({ width: 100, height: 100 });
+    const imgB = await screenshotOfColor('white');
+    await page.setViewportSize({ width: 200, height: 200 });
+    const result = await diffScreenshots(page, imgA, imgB, {});
+    expect(result.dimensionMismatch).toBe(true);
+    expect(result.mismatchPercentage).toBe(100);
+    if (result.diffPath) fs.unlinkSync(result.diffPath);
+  });
+
+  it('should write diff image to custom outputPath', async () => {
+    const imgA = await screenshotOfColor('green');
+    const imgB = await screenshotOfColor('yellow');
+    const outputPath = path.join(os.tmpdir(), `diff-test-${Date.now()}.png`);
+    const result = await diffScreenshots(page, imgA, imgB, { outputPath });
+    expect(result.diffPath).toBe(outputPath);
+    expect(fs.existsSync(outputPath)).toBe(true);
+    const stat = fs.statSync(outputPath);
+    expect(stat.size).toBeGreaterThan(0);
+    fs.unlinkSync(outputPath);
   });
 });

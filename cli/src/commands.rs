@@ -1082,7 +1082,7 @@ fn parse_diff(rest: &[&str], id: &str, flags: &Flags) -> Result<Value, ParseErro
                     }
                     "-d" | "--depth" => {
                         if let Some(d) = rest.get(i + 1) {
-                            match d.parse::<i32>() {
+                            match d.parse::<u32>() {
                                 Ok(n) => {
                                     obj.insert("maxDepth".to_string(), json!(n));
                                     i += 1;
@@ -1259,7 +1259,7 @@ fn parse_diff(rest: &[&str], id: &str, flags: &Flags) -> Result<Value, ParseErro
                     }
                     "-d" | "--depth" => {
                         if let Some(d) = rest.get(i + 1) {
-                            match d.parse::<i32>() {
+                            match d.parse::<u32>() {
                                 Ok(n) => {
                                     obj.insert("maxDepth".to_string(), json!(n));
                                     i += 1;
@@ -3328,6 +3328,29 @@ mod tests {
     fn test_diff_url_depth_invalid_value() {
         let result = parse_command(
             &args("diff url https://a.com https://b.com --depth abc"),
+            &default_flags(),
+        );
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn test_diff_snapshot_depth_negative_value() {
+        let result = parse_command(&args("diff snapshot --depth -1"), &default_flags());
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn test_diff_url_depth_negative_value() {
+        let result = parse_command(
+            &args("diff url https://a.com https://b.com --depth -1"),
             &default_flags(),
         );
         assert!(result.is_err());

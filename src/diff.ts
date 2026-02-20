@@ -167,7 +167,7 @@ interface PixelDiffResult {
   dimensionMismatch: boolean;
 }
 
-const DIFF_ROUTE_PREFIX = 'https://agent-browser-diff.internal';
+const DIFF_ROUTE_PREFIX = 'https://agent-browser-diff.localhost';
 
 /**
  * Compare two image buffers using the browser's Canvas API for pixel comparison.
@@ -185,15 +185,21 @@ export async function diffScreenshots(
   const threshold = opts.threshold ?? 0.1;
 
   const nonce = Math.random().toString(36).slice(2, 10);
+  const blankUrl = `${DIFF_ROUTE_PREFIX}/${nonce}/index.html`;
   const baselineUrl = `${DIFF_ROUTE_PREFIX}/${nonce}/baseline.png`;
   const currentUrl = `${DIFF_ROUTE_PREFIX}/${nonce}/current.png`;
 
   const context = page.context();
   const diffPage = await context.newPage();
 
+  let blankRouted = false;
   let baselineRouted = false;
   let currentRouted = false;
   try {
+    await diffPage.route(blankUrl, (route) =>
+      route.fulfill({ body: '<html><body></body></html>', contentType: 'text/html' })
+    );
+    blankRouted = true;
     await diffPage.route(baselineUrl, (route) =>
       route.fulfill({ body: baselineBuffer, contentType: baselineMime })
     );
@@ -202,6 +208,8 @@ export async function diffScreenshots(
       route.fulfill({ body: currentBuffer, contentType: 'image/png' })
     );
     currentRouted = true;
+
+    await diffPage.goto(blankUrl);
 
     const pixelDiffFn = async (args: {
       baselineUrl: string;
@@ -324,6 +332,7 @@ export async function diffScreenshots(
       ...(result.dimensionMismatch ? { dimensionMismatch: true } : {}),
     };
   } finally {
+    if (blankRouted) await diffPage.unroute(blankUrl).catch(() => {});
     if (baselineRouted) await diffPage.unroute(baselineUrl).catch(() => {});
     if (currentRouted) await diffPage.unroute(currentUrl).catch(() => {});
     await diffPage.close().catch(() => {});

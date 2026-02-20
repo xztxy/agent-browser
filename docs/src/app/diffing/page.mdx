@@ -117,10 +117,9 @@ After completion, the browser remains on the second URL.
 The most common use case: confirm that an action (click, fill, submit) changed the page as expected.
 
 ```bash
-agent-browser snapshot -i
+agent-browser snapshot -i          # Take interactive-only snapshot (baseline)
 agent-browser fill @e3 "test@example.com"
-agent-browser diff snapshot
-# Output shows the textbox value changed
+agent-browser diff snapshot        # Compare current snapshot to the baseline
 ```
 
 ### Monitoring for changes
