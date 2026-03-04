@@ -233,6 +233,11 @@ fn try_launch_chrome(chrome_path: &Path, options: &LaunchOptions) -> Result<Chro
                 .map(|(port, ws_path)| format!("ws://127.0.0.1:{}{}", port, ws_path));
 
             if let Some(url) = fallback_url {
+                if let Ok(Some(_)) = child.try_wait() {
+                    let _ = child.kill();
+                    cleanup_temp_dir(&temp_user_data_dir);
+                    return Err(e);
+                }
                 url
             } else {
                 let _ = child.kill();

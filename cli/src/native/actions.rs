@@ -746,7 +746,10 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
             state.last_successful_command = Some(Instant::now());
             success_response(&id, data)
         }
-        Err(e) => error_response(&id, &super::browser::to_ai_friendly_error(&e)),
+        Err(e) => {
+            state.last_successful_command = None;
+            error_response(&id, &super::browser::to_ai_friendly_error(&e))
+        }
     }
 }
 
