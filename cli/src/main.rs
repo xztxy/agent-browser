@@ -5,6 +5,8 @@ mod flags;
 mod install;
 mod native;
 mod output;
+#[cfg(test)]
+mod test_utils;
 mod validation;
 
 use serde_json::json;

@@ -5134,37 +5134,7 @@ fn error_response(id: &str, error: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
-
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
-
-    /// RAII guard that locks env mutex and restores env vars on drop
-    struct EnvGuard<'a> {
-        _lock: MutexGuard<'a, ()>,
-        vars: Vec<(String, Option<String>)>,
-    }
-
-    impl<'a> EnvGuard<'a> {
-        fn new(var_names: &[&str]) -> Self {
-            let lock = ENV_MUTEX.lock().unwrap();
-            let vars = var_names
-                .iter()
-                .map(|&name| (name.to_string(), env::var(name).ok()))
-                .collect();
-            Self { _lock: lock, vars }
-        }
-    }
-
-    impl Drop for EnvGuard<'_> {
-        fn drop(&mut self) {
-            for (name, value) in &self.vars {
-                match value {
-                    Some(v) => env::set_var(name, v),
-                    None => env::remove_var(name),
-                }
-            }
-        }
-    }
+    use crate::test_utils::EnvGuard;
 
     #[test]
     fn test_success_response_structure() {
