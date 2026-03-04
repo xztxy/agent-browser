@@ -6,6 +6,7 @@ use tokio::sync::broadcast;
 use super::auth;
 use super::browser::{BrowserManager, WaitUntil};
 use super::cdp::chrome::LaunchOptions;
+use super::cdp::client::CdpPingHandle;
 use super::cdp::types::{
     AttachToTargetParams, AttachToTargetResult, CdpEvent, ConsoleApiCalledEvent,
     CreateTargetResult, ExceptionThrownEvent, TargetCreatedEvent, TargetDestroyedEvent,
@@ -75,6 +76,17 @@ pub struct FetchPausedRequest {
 pub enum BackendType {
     Cdp,
     WebDriver,
+}
+
+/// Returned by `DaemonState::alive_check_info` to tell the daemon whether an
+/// expensive connection-liveness check is needed and, if so, provides a
+/// lightweight handle to perform it outside the state lock.
+pub enum AliveCheckInfo {
+    /// No alive check needed (recently verified, no browser, or skip-launch action).
+    Skip,
+    /// A slow CDP round-trip is needed. The `CdpPingHandle` can be used outside
+    /// the lock to avoid blocking other connections.
+    Check(CdpPingHandle),
 }
 
 pub struct DaemonState {
@@ -388,15 +400,68 @@ impl DaemonState {
 
         (pending_acks, new_targets, destroyed_targets, fetch_paused)
     }
+
+    /// Determines whether an expensive `is_connection_alive` check is needed
+    /// for the given command. Returns a `CdpPingHandle` that can be used
+    /// **outside** the state lock so other connections aren't blocked.
+    pub fn alive_check_info(&self, cmd: &Value) -> AliveCheckInfo {
+        let action = cmd.get("action").and_then(|v| v.as_str()).unwrap_or("");
+
+        let skip_launch = matches!(
+            action,
+            "" | "launch"
+                | "close"
+                | "credentials_set"
+                | "credentials_get"
+                | "credentials_delete"
+                | "credentials_list"
+                | "auth_save"
+                | "auth_show"
+                | "auth_delete"
+                | "auth_list"
+                | "state_list"
+                | "state_show"
+                | "state_clear"
+                | "state_clean"
+                | "state_rename"
+                | "device_list"
+        );
+        if skip_launch {
+            return AliveCheckInfo::Skip;
+        }
+
+        match &self.browser {
+            None => AliveCheckInfo::Skip,
+            Some(mgr) => {
+                let recently_ok = self
+                    .last_successful_command
+                    .map(|t| t.elapsed().as_secs() < ALIVE_CHECK_INTERVAL_SECS)
+                    .unwrap_or(false);
+                if recently_ok {
+                    AliveCheckInfo::Skip
+                } else {
+                    AliveCheckInfo::Check(mgr.client.ping_handle())
+                }
+            }
+        }
+    }
 }
+
+const ALIVE_CHECK_INTERVAL_SECS: u64 = 5;
 
 /// Pre-command setup: drains CDP events, checks policies, and ensures browser
 /// is launched. Returns `Some(response)` if the command should be short-circuited
 /// (e.g. policy denial), or `None` to continue with command execution.
 ///
-/// Separated from `execute_command` so the daemon can release the state lock
-/// between setup and execution, allowing other connections to make progress.
-pub async fn pre_command_setup(cmd: &Value, state: &mut DaemonState) -> Option<Value> {
+/// `alive_hint` is an optional result from a connection-liveness check
+/// performed outside the state lock (via `CdpPingHandle`). When
+/// `Some(true)`, the inline `is_connection_alive` round-trip is skipped.
+/// All other values fall through to an inline check for correctness.
+pub async fn pre_command_setup(
+    cmd: &Value,
+    state: &mut DaemonState,
+    alive_hint: Option<bool>,
+) -> Option<Value> {
     let action = cmd.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let id = cmd
         .get("id")
@@ -529,13 +594,12 @@ pub async fn pre_command_setup(cmd: &Value, state: &mut DaemonState) -> Option<V
             | "device_list"
     );
     if !skip_launch {
-        const ALIVE_CHECK_INTERVAL_SECS: u64 = 5;
         let needs_launch = if let Some(ref mgr) = state.browser {
             let recently_ok = state
                 .last_successful_command
                 .map(|t| t.elapsed().as_secs() < ALIVE_CHECK_INTERVAL_SECS)
                 .unwrap_or(false);
-            if recently_ok {
+            if recently_ok || alive_hint == Some(true) {
                 false
             } else {
                 !mgr.is_connection_alive().await

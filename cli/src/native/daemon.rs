@@ -7,7 +7,7 @@ use std::process;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::signal;
 
-use super::actions::{execute_command, pre_command_setup, DaemonState};
+use super::actions::{execute_command, pre_command_setup, AliveCheckInfo, DaemonState};
 use super::state;
 
 pub async fn run_daemon(session: &str) {
@@ -167,18 +167,30 @@ where
 
                 let is_close = cmd.get("action").and_then(|v| v.as_str()) == Some("close");
 
-                // Split lock into two phases so other connections can
-                // make progress between pre-command setup and execution.
-                let early_response = {
-                    let mut s = state.lock().await;
-                    pre_command_setup(&cmd, &mut s).await
+                // Phase 1: Determine if a slow connection-liveness check is
+                // needed (quick lock, no I/O).
+                let check_info = {
+                    let s = state.lock().await;
+                    s.alive_check_info(&cmd)
                 };
 
-                let response = if let Some(resp) = early_response {
-                    resp
-                } else {
+                // Phase 2: Perform the slow CDP ping *outside* the lock so
+                // other connections can make progress.
+                let alive_hint = match check_info {
+                    AliveCheckInfo::Skip => None,
+                    AliveCheckInfo::Check(handle) => Some(handle.is_alive().await),
+                };
+
+                // Phase 3: Run pre-command setup and execution atomically
+                // under a single lock, using the alive hint to skip the
+                // redundant inline check when the connection was verified.
+                let response = {
                     let mut s = state.lock().await;
-                    execute_command(&cmd, &mut s).await
+                    if let Some(resp) = pre_command_setup(&cmd, &mut s, alive_hint).await {
+                        resp
+                    } else {
+                        execute_command(&cmd, &mut s).await
+                    }
                 };
 
                 let mut resp = serde_json::to_string(&response).unwrap_or_default();
