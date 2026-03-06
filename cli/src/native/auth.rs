@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AuthProfile {
     pub name: String,
     pub url: String,
@@ -17,6 +18,10 @@ pub struct AuthProfile {
     pub password_selector: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub submit_selector: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_login_at: Option<String>,
 }
 
 // Keep legacy Credential alias for backward compatibility
@@ -188,41 +193,43 @@ struct EncryptedPayload {
 }
 
 fn decrypt_profile(data: &[u8]) -> Result<AuthProfile, String> {
-    let key = get_encryption_key()?;
-
     let text = std::str::from_utf8(data).map_err(|_| {
-        "Profile is not a valid encrypted payload -- it may use an older incompatible format"
-            .to_string()
-    })?;
-    let payload: EncryptedPayload = serde_json::from_str(text).map_err(|_| {
-        "Profile is not a valid encrypted payload -- it may use an older incompatible format"
-            .to_string()
+        "Profile is not valid UTF-8 -- it may use an older incompatible binary format".to_string()
     })?;
 
-    let iv = STANDARD
-        .decode(&payload.iv)
-        .map_err(|e| format!("Invalid base64 iv: {}", e))?;
-    let auth_tag = STANDARD
-        .decode(&payload.auth_tag)
-        .map_err(|e| format!("Invalid base64 authTag: {}", e))?;
-    let ciphertext = STANDARD
-        .decode(&payload.data)
-        .map_err(|e| format!("Invalid base64 data: {}", e))?;
+    if let Ok(payload) = serde_json::from_str::<EncryptedPayload>(text) {
+        let key = get_encryption_key()?;
 
-    // aes_gcm expects ciphertext || auth_tag as input to decrypt
-    let mut combined = Vec::with_capacity(ciphertext.len() + auth_tag.len());
-    combined.extend_from_slice(&ciphertext);
-    combined.extend_from_slice(&auth_tag);
+        let iv = STANDARD
+            .decode(&payload.iv)
+            .map_err(|e| format!("Invalid base64 iv: {}", e))?;
+        let auth_tag = STANDARD
+            .decode(&payload.auth_tag)
+            .map_err(|e| format!("Invalid base64 authTag: {}", e))?;
+        let ciphertext = STANDARD
+            .decode(&payload.data)
+            .map_err(|e| format!("Invalid base64 data: {}", e))?;
 
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Decryption key error: {}", e))?;
-    let plaintext = cipher
-        .decrypt(aes_gcm::Nonce::from_slice(&iv), combined.as_slice())
-        .map_err(|e| format!("Decryption failed: {}", e))?;
+        // aes_gcm expects ciphertext || auth_tag as input to decrypt
+        let mut combined = Vec::with_capacity(ciphertext.len() + auth_tag.len());
+        combined.extend_from_slice(&ciphertext);
+        combined.extend_from_slice(&auth_tag);
 
-    let json_str = String::from_utf8(plaintext)
-        .map_err(|e| format!("Decrypted data is not valid UTF-8: {}", e))?;
-    serde_json::from_str(&json_str).map_err(|e| format!("Invalid profile data: {}", e))
+        let cipher = Aes256Gcm::new_from_slice(&key)
+            .map_err(|e| format!("Decryption key error: {}", e))?;
+        let plaintext = cipher
+            .decrypt(aes_gcm::Nonce::from_slice(&iv), combined.as_slice())
+            .map_err(|e| format!("Decryption failed: {}", e))?;
+
+        let json_str = String::from_utf8(plaintext)
+            .map_err(|e| format!("Decrypted data is not valid UTF-8: {}", e))?;
+        return serde_json::from_str(&json_str)
+            .map_err(|e| format!("Invalid profile data: {}", e));
+    }
+
+    // Fallback: try as plain unencrypted JSON profile
+    serde_json::from_str::<AuthProfile>(text)
+        .map_err(|_| "Profile is not a valid encrypted or unencrypted payload".to_string())
 }
 
 fn save_profile(profile: &AuthProfile) -> Result<(), String> {
@@ -269,6 +276,8 @@ pub fn credentials_set(
         username_selector: None,
         password_selector: None,
         submit_selector: None,
+        created_at: None,
+        last_login_at: None,
     };
     save_profile(&profile)?;
     Ok(json!({ "saved": name }))
@@ -292,6 +301,8 @@ pub fn auth_save(
         username_selector: username_selector.map(String::from),
         password_selector: password_selector.map(String::from),
         submit_selector: submit_selector.map(String::from),
+        created_at: None,
+        last_login_at: None,
     };
     save_profile(&profile)?;
     Ok(json!({ "saved": name }))
@@ -375,14 +386,14 @@ pub fn auth_show(name: &str) -> Result<Value, String> {
 }
 
 #[cfg(test)]
+pub(crate) static AUTH_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     fn with_test_key<F: FnOnce()>(f: F) {
-        let _lock = TEST_MUTEX.lock().unwrap();
+        let _lock = AUTH_TEST_MUTEX.lock().unwrap();
         let original = std::env::var(ENCRYPTION_KEY_ENV).ok();
         let test_key = "a".repeat(64);
         // SAFETY: TEST_MUTEX serializes all test access so no concurrent mutation.
@@ -416,6 +427,8 @@ mod tests {
             username_selector: None,
             password_selector: None,
             submit_selector: Some("button[type=submit]".to_string()),
+            created_at: None,
+            last_login_at: None,
         };
         let json = serde_json::to_string(&profile).unwrap();
         let parsed: AuthProfile = serde_json::from_str(&json).unwrap();
@@ -438,6 +451,8 @@ mod tests {
                 username_selector: None,
                 password_selector: None,
                 submit_selector: None,
+                created_at: None,
+                last_login_at: None,
             };
             let encrypted_json = encrypt_profile(&profile).unwrap();
             let decrypted = decrypt_profile(encrypted_json.as_bytes()).unwrap();
@@ -482,6 +497,8 @@ mod tests {
                 username_selector: Some("#email".to_string()),
                 password_selector: None,
                 submit_selector: None,
+                created_at: None,
+                last_login_at: None,
             };
 
             // Encrypt with aes_gcm, then manually build the JSON payload
@@ -523,6 +540,8 @@ mod tests {
                 username_selector: None,
                 password_selector: None,
                 submit_selector: None,
+                created_at: None,
+                last_login_at: None,
             };
             let encrypted = encrypt_profile(&profile).unwrap();
             let parsed: Value = serde_json::from_str(&encrypted).unwrap();
