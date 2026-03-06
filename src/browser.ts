@@ -1356,7 +1356,6 @@ export class BrowserManager {
         path.join(os.tmpdir(), `agent-browser-ext-${session}`),
         {
           headless: options.headless ?? true,
-          channel: 'chromium',
           executablePath: options.executablePath,
           args: allArgs,
           viewport,

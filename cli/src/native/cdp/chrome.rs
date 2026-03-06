@@ -170,7 +170,7 @@ fn build_chrome_args(options: &LaunchOptions) -> Result<ChromeArgs, String> {
         .iter()
         .any(|a| a.starts_with("--start-maximized") || a.starts_with("--window-size="));
 
-    if !has_window_size && options.headless {
+    if !has_window_size && options.headless && !has_extensions {
         args.push("--window-size=1280,720".to_string());
     }
 
@@ -800,6 +800,10 @@ mod tests {
         assert!(
             !result.args.iter().any(|a| a.contains("--headless")),
             "headless flag should be omitted when extensions are present"
+        );
+        assert!(
+            !result.args.iter().any(|a| a.contains("--window-size")),
+            "window-size should be omitted when extensions force headed mode"
         );
         assert!(result
             .args
