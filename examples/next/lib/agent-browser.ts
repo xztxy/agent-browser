@@ -8,6 +8,29 @@
 
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
+import fs from "node:fs";
+
+const CHROME_PATHS = [
+  // macOS
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  // Linux
+  "/usr/bin/google-chrome",
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  // Windows (WSL / common locations)
+  "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+  "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+];
+
+function findLocalChrome(): string {
+  for (const p of CHROME_PATHS) {
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error(
+    `Chrome not found. Set CHROMIUM_PATH to your Chrome/Chromium binary. Searched: ${CHROME_PATHS.join(", ")}`,
+  );
+}
 
 async function launchBrowser() {
   const isLambda =
@@ -15,8 +38,7 @@ async function launchBrowser() {
 
   const executablePath = isLambda
     ? await chromium.executablePath()
-    : process.env.CHROMIUM_PATH ||
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    : process.env.CHROMIUM_PATH || findLocalChrome();
 
   const args = isLambda
     ? chromium.args
