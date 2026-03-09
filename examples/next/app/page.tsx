@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useSyncExternalStore } from "react";
 import { takeScreenshot, takeSnapshot, getEnvStatus } from "./actions/browse";
 import type {
   ScreenshotResult,
@@ -19,6 +19,19 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Loader2, Monitor, TriangleAlert, CircleX } from "lucide-react";
+
+const MOBILE_QUERY = "(max-width: 767px)";
+const subscribe = (cb: () => void) => {
+  const mql = window.matchMedia(MOBILE_QUERY);
+  mql.addEventListener("change", cb);
+  return () => mql.removeEventListener("change", cb);
+};
+const getSnapshot = () => window.matchMedia(MOBILE_QUERY).matches;
+const getServerSnapshot = () => false;
+
+function useIsMobile() {
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
 
 type Action = "screenshot" | "snapshot";
 
@@ -165,6 +178,7 @@ function ModeCard({
 }
 
 export default function Home() {
+  const isMobile = useIsMobile();
   const [url, setUrl] = useState("https://example.com");
   const [loading, setLoading] = useState(false);
   const [action, setAction] = useState<Action>("screenshot");
@@ -210,16 +224,198 @@ export default function Home() {
       ? "Running locally without CHROMIUM_PATH. The app will try to use your system Chrome. Set CHROMIUM_PATH if Chrome is not in the default location."
       : null;
 
+  const controlsForm = (
+    <form onSubmit={handleSubmit} className="p-5 space-y-5">
+      <div className="space-y-1.5">
+        <Label
+          htmlFor="url-input"
+          className="text-[11px] text-muted-foreground uppercase tracking-wider"
+        >
+          URL
+        </Label>
+        <Input
+          id="url-input"
+          type="url"
+          value={url}
+          onChange={(e) => {
+            setUrl(e.target.value);
+            clearResults();
+          }}
+          placeholder="https://example.com"
+          required
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">
+          Action
+        </Label>
+        <SegmentedControl<Action>
+          value={action}
+          onChange={(v) => {
+            setAction(v);
+            clearResults();
+          }}
+          options={[
+            { value: "screenshot", label: "Screenshot" },
+            { value: "snapshot", label: "Snapshot" },
+          ]}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          {action === "screenshot"
+            ? "Captures a full-page PNG image"
+            : "Returns the accessibility tree"}
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">
+          Runtime
+        </Label>
+        <div className="space-y-2">
+          <ModeCard
+            selected={mode === "serverless"}
+            onSelect={() => {
+              setMode("serverless");
+              clearResults();
+            }}
+            title="Serverless Function"
+            description="Runs @sparticuz/chromium + puppeteer-core directly in a Vercel function."
+            badges={
+              envStatus && (
+                <EnvBadge
+                  label="@sparticuz/chromium"
+                  status={
+                    envStatus.serverless.isVercel
+                      ? "ok"
+                      : envStatus.serverless.hasChromiumPath
+                        ? "ok"
+                        : "warn"
+                  }
+                  value={
+                    envStatus.serverless.isVercel
+                      ? "auto"
+                      : envStatus.serverless.hasChromiumPath
+                        ? "CHROMIUM_PATH"
+                        : "system Chrome"
+                  }
+                />
+              )
+            }
+          />
+          <ModeCard
+            selected={mode === "sandbox"}
+            onSelect={() => {
+              setMode("sandbox");
+              clearResults();
+            }}
+            title="Vercel Sandbox"
+            description="Ephemeral microVM with agent-browser + Chrome. No binary size limits."
+            badges={
+              envStatus && (
+                <EnvBadge
+                  label="AGENT_BROWSER_SNAPSHOT_ID"
+                  status={
+                    envStatus.sandbox.hasSnapshot ? "ok" : "warn"
+                  }
+                />
+              )
+            }
+          />
+        </div>
+      </div>
+
+      {envWarning && (
+        <Alert>
+          <TriangleAlert className="size-4" />
+          <AlertTitle>Local development</AlertTitle>
+          <AlertDescription>{envWarning}</AlertDescription>
+        </Alert>
+      )}
+
+      <Button
+        type="submit"
+        disabled={loading}
+        className="w-full"
+        size="lg"
+      >
+        {loading && <Loader2 className="size-4 animate-spin" />}
+        {loading ? "Running..." : "Run"}
+      </Button>
+    </form>
+  );
+
+  const resultContent = loading ? (
+    <div className="min-h-[300px] md:h-full flex flex-col items-center justify-center gap-3 text-muted-foreground">
+      <Loader2 className="size-6 animate-spin" />
+      <p className="text-sm">Taking {action}...</p>
+    </div>
+  ) : hasResult ? (
+    <div className="flex flex-col items-center p-6 lg:p-10">
+      {screenshotResult &&
+        (screenshotResult.ok ? (
+          <div className="w-full max-w-3xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold truncate mr-3">
+                {screenshotResult.title}
+              </h2>
+              <Badge variant="outline" className="font-mono text-[11px] shrink-0">
+                screenshot
+              </Badge>
+            </div>
+            <div className="rounded-xl border border-border overflow-hidden shadow-sm">
+              <img
+                src={`data:image/png;base64,${screenshotResult.screenshot}`}
+                alt={screenshotResult.title}
+                className="w-full block"
+              />
+            </div>
+          </div>
+        ) : (
+          <ErrorDisplay
+            error={screenshotResult.error ?? "Unknown error"}
+          />
+        ))}
+
+      {snapshotResult &&
+        (snapshotResult.ok ? (
+          <div className="w-full max-w-3xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold truncate mr-3">
+                {snapshotResult.title}
+              </h2>
+              <Badge variant="outline" className="font-mono text-[11px] shrink-0">
+                snapshot
+              </Badge>
+            </div>
+            <pre className="bg-card rounded-xl border border-border p-5 overflow-auto text-[13px] leading-relaxed font-mono max-h-[calc(100vh-12rem)]">
+              {snapshotResult.snapshot}
+            </pre>
+          </div>
+        ) : (
+          <ErrorDisplay
+            error={snapshotResult.error ?? "Unknown error"}
+          />
+        ))}
+    </div>
+  ) : (
+    <div className="min-h-[300px] md:h-full flex flex-col items-center justify-center text-muted-foreground">
+      <Monitor className="size-12 mb-4 opacity-30" strokeWidth={1} />
+      <p className="text-sm font-medium mb-1">No result yet</p>
+      <p className="text-[13px]">Enter a URL and click Run</p>
+    </div>
+  );
+
   return (
     <div className="h-screen flex flex-col">
       <header className="border-b border-border shrink-0">
-        <div className="px-6 h-12 flex items-center justify-between">
+        <div className="px-4 md:px-6 h-12 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-sm font-semibold tracking-tight">
               agent-browser
             </span>
-            <span className="text-muted-foreground text-sm">/</span>
-            <span className="text-sm text-muted-foreground">
+            <span className="text-muted-foreground text-sm hidden sm:inline">/</span>
+            <span className="text-sm text-muted-foreground hidden sm:inline">
               Next.js Example
             </span>
           </div>
@@ -237,197 +433,26 @@ export default function Home() {
         </div>
       </header>
 
-      <ResizablePanelGroup orientation="horizontal" className="flex-1">
-        <ResizablePanel defaultSize={30} minSize={20} maxSize={50}>
-          <aside className="h-full overflow-y-auto">
-            <form onSubmit={handleSubmit} className="p-5 space-y-5">
-              <div className="space-y-1.5">
-                <Label
-                  htmlFor="url-input"
-                  className="text-[11px] text-muted-foreground uppercase tracking-wider"
-                >
-                  URL
-                </Label>
-                <Input
-                  id="url-input"
-                  type="url"
-                  value={url}
-                  onChange={(e) => {
-                    setUrl(e.target.value);
-                    clearResults();
-                  }}
-                  placeholder="https://example.com"
-                  required
-                />
-              </div>
+      {isMobile ? (
+        <div className="flex-1 overflow-auto">
+          <div className="border-b border-border">{controlsForm}</div>
+          <div className="bg-surface">{resultContent}</div>
+        </div>
+      ) : (
+        <ResizablePanelGroup orientation="horizontal" className="flex-1">
+          <ResizablePanel defaultSize="30%" minSize="20%" maxSize="50%">
+            <aside className="h-full overflow-y-auto">{controlsForm}</aside>
+          </ResizablePanel>
 
-              <div className="space-y-1.5">
-                <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">
-                  Action
-                </Label>
-                <SegmentedControl<Action>
-                  value={action}
-                  onChange={(v) => {
-                    setAction(v);
-                    clearResults();
-                  }}
-                  options={[
-                    { value: "screenshot", label: "Screenshot" },
-                    { value: "snapshot", label: "Snapshot" },
-                  ]}
-                />
-                <p className="text-[11px] text-muted-foreground">
-                  {action === "screenshot"
-                    ? "Captures a full-page PNG image"
-                    : "Returns the accessibility tree"}
-                </p>
-              </div>
+          <ResizableHandle withHandle />
 
-              <div className="space-y-1.5">
-                <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">
-                  Runtime
-                </Label>
-                <div className="space-y-2">
-                  <ModeCard
-                    selected={mode === "serverless"}
-                    onSelect={() => {
-                      setMode("serverless");
-                      clearResults();
-                    }}
-                    title="Serverless Function"
-                    description="Runs @sparticuz/chromium + puppeteer-core directly in a Vercel function."
-                    badges={
-                      envStatus && (
-                        <EnvBadge
-                          label="@sparticuz/chromium"
-                          status={
-                            envStatus.serverless.isVercel
-                              ? "ok"
-                              : envStatus.serverless.hasChromiumPath
-                                ? "ok"
-                                : "warn"
-                          }
-                          value={
-                            envStatus.serverless.isVercel
-                              ? "auto"
-                              : envStatus.serverless.hasChromiumPath
-                                ? "CHROMIUM_PATH"
-                                : "system Chrome"
-                          }
-                        />
-                      )
-                    }
-                  />
-                  <ModeCard
-                    selected={mode === "sandbox"}
-                    onSelect={() => {
-                      setMode("sandbox");
-                      clearResults();
-                    }}
-                    title="Vercel Sandbox"
-                    description="Ephemeral microVM with agent-browser + Chrome. No binary size limits."
-                    badges={
-                      envStatus && (
-                        <EnvBadge
-                          label="AGENT_BROWSER_SNAPSHOT_ID"
-                          status={
-                            envStatus.sandbox.hasSnapshot ? "ok" : "warn"
-                          }
-                        />
-                      )
-                    }
-                  />
-                </div>
-              </div>
-
-              {envWarning && (
-                <Alert>
-                  <TriangleAlert className="size-4" />
-                  <AlertTitle>Local development</AlertTitle>
-                  <AlertDescription>{envWarning}</AlertDescription>
-                </Alert>
-              )}
-
-              <Button
-                type="submit"
-                disabled={loading}
-                className="w-full"
-                size="lg"
-              >
-                {loading && <Loader2 className="size-4 animate-spin" />}
-                {loading ? "Running..." : "Run"}
-              </Button>
-            </form>
-          </aside>
-        </ResizablePanel>
-
-        <ResizableHandle withHandle />
-
-        <ResizablePanel defaultSize={70}>
-          <main className="h-full overflow-auto bg-surface">
-            {loading ? (
-              <div className="h-full flex flex-col items-center justify-center gap-3 text-muted-foreground">
-                <Loader2 className="size-6 animate-spin" />
-                <p className="text-sm">Taking {action}...</p>
-              </div>
-            ) : hasResult ? (
-              <div className="h-full flex flex-col items-center p-6 lg:p-10">
-                {screenshotResult &&
-                  (screenshotResult.ok ? (
-                    <div className="w-full max-w-3xl">
-                      <div className="flex items-center justify-between mb-4">
-                        <h2 className="text-sm font-semibold truncate mr-3">
-                          {screenshotResult.title}
-                        </h2>
-                        <Badge variant="outline" className="font-mono text-[11px] shrink-0">
-                          screenshot
-                        </Badge>
-                      </div>
-                      <div className="rounded-xl border border-border overflow-hidden shadow-sm">
-                        <img
-                          src={`data:image/png;base64,${screenshotResult.screenshot}`}
-                          alt={screenshotResult.title}
-                          className="w-full block"
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <ErrorDisplay
-                      error={screenshotResult.error ?? "Unknown error"}
-                    />
-                  ))}
-
-                {snapshotResult &&
-                  (snapshotResult.ok ? (
-                    <div className="w-full max-w-3xl">
-                      <div className="flex items-center justify-between mb-4">
-                        <h2 className="text-sm font-semibold truncate mr-3">
-                          {snapshotResult.title}
-                        </h2>
-                        <Badge variant="outline" className="font-mono text-[11px] shrink-0">
-                          snapshot
-                        </Badge>
-                      </div>
-                      <pre className="bg-card rounded-xl border border-border p-5 overflow-auto text-[13px] leading-relaxed font-mono max-h-[calc(100vh-12rem)]">
-                        {snapshotResult.snapshot}
-                      </pre>
-                    </div>
-                  ) : (
-                    <ErrorDisplay
-                      error={snapshotResult.error ?? "Unknown error"}
-                    />
-                  ))}
-              </div>
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
-                <Monitor className="size-12 mb-4 opacity-30" strokeWidth={1} />
-                <p className="text-sm font-medium mb-1">No result yet</p>
-                <p className="text-[13px]">Enter a URL and click Run</p>
-              </div>
-            )}
-          </main>
-        </ResizablePanel>
-      </ResizablePanelGroup>
+          <ResizablePanel defaultSize="70%">
+            <main className="h-full overflow-auto bg-surface">
+              {resultContent}
+            </main>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      )}
     </div>
   );
 }
