@@ -1590,7 +1590,7 @@ Usage: agent-browser set <setting> [args]
 Configures various browser settings and emulation options.
 
 Settings:
-  viewport <w> <h>           Set viewport size
+  viewport <w> <h> [scale]   Set viewport size (scale = deviceScaleFactor, e.g. 2 for retina)
   device <name>              Emulate device (e.g., "iPhone 12")
   geo <lat> <lng>            Set geolocation
   offline [on|off]           Toggle offline mode
@@ -1605,6 +1605,7 @@ Global Options:
 
 Examples:
   agent-browser set viewport 1920 1080
+  agent-browser set viewport 1920 1080 2    # 2x retina
   agent-browser set device "iPhone 12"
   agent-browser set geo 37.7749 -122.4194
   agent-browser set offline on

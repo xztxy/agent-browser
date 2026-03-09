@@ -1871,25 +1871,35 @@ fn parse_set(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         Some("viewport") => {
             let w_str = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
                 context: "set viewport".to_string(),
-                usage: "set viewport <width> <height>",
+                usage: "set viewport <width> <height> [scale]",
             })?;
             let h_str = rest.get(2).ok_or_else(|| ParseError::MissingArguments {
                 context: "set viewport".to_string(),
-                usage: "set viewport <width> <height>",
+                usage: "set viewport <width> <height> [scale]",
             })?;
             let w = w_str
                 .parse::<i32>()
                 .map_err(|_| ParseError::MissingArguments {
                     context: "set viewport".to_string(),
-                    usage: "set viewport <width> <height>",
+                    usage: "set viewport <width> <height> [scale]",
                 })?;
             let h = h_str
                 .parse::<i32>()
                 .map_err(|_| ParseError::MissingArguments {
                     context: "set viewport".to_string(),
-                    usage: "set viewport <width> <height>",
+                    usage: "set viewport <width> <height> [scale]",
                 })?;
-            Ok(json!({ "id": id, "action": "viewport", "width": w, "height": h }))
+            let mut cmd = json!({ "id": id, "action": "viewport", "width": w, "height": h });
+            if let Some(scale_str) = rest.get(3) {
+                let scale = scale_str.parse::<f64>().map_err(|_| {
+                    ParseError::MissingArguments {
+                        context: "set viewport".to_string(),
+                        usage: "set viewport <width> <height> [scale]",
+                    }
+                })?;
+                cmd["deviceScaleFactor"] = json!(scale);
+            }
+            Ok(cmd)
         }
         Some("device") => {
             let dev = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
@@ -3043,6 +3053,45 @@ mod tests {
         assert_eq!(cmd["action"], "emulatemedia");
         assert_eq!(cmd["colorScheme"], "light");
         assert_eq!(cmd["reducedMotion"], "reduce");
+    }
+
+    #[test]
+    fn test_set_viewport() {
+        let cmd = parse_command(&args("set viewport 1920 1080"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "viewport");
+        assert_eq!(cmd["width"], 1920);
+        assert_eq!(cmd["height"], 1080);
+        assert!(cmd.get("deviceScaleFactor").is_none());
+    }
+
+    #[test]
+    fn test_set_viewport_with_scale() {
+        let cmd = parse_command(&args("set viewport 1920 1080 2"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "viewport");
+        assert_eq!(cmd["width"], 1920);
+        assert_eq!(cmd["height"], 1080);
+        assert_eq!(cmd["deviceScaleFactor"], 2.0);
+    }
+
+    #[test]
+    fn test_set_viewport_with_fractional_scale() {
+        let cmd = parse_command(&args("set viewport 375 812 3"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "viewport");
+        assert_eq!(cmd["width"], 375);
+        assert_eq!(cmd["height"], 812);
+        assert_eq!(cmd["deviceScaleFactor"], 3.0);
+    }
+
+    #[test]
+    fn test_set_viewport_missing_height() {
+        let result = parse_command(&args("set viewport 1920"), &default_flags());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_viewport_invalid_scale() {
+        let result = parse_command(&args("set viewport 1920 1080 abc"), &default_flags());
+        assert!(result.is_err());
     }
 
     #[test]

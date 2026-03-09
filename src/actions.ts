@@ -1466,10 +1466,31 @@ async function handleViewport(
   browser: BrowserManager
 ): Promise<Response> {
   await browser.setViewport(command.width, command.height);
-  return successResponse(command.id, {
+
+  if (command.deviceScaleFactor && command.deviceScaleFactor !== 1) {
+    await browser.setDeviceScaleFactor(
+      command.deviceScaleFactor,
+      command.width,
+      command.height,
+      false
+    );
+  } else if (command.deviceScaleFactor === 1) {
+    try {
+      await browser.clearDeviceMetricsOverride();
+    } catch {
+      // Ignore if override was never set
+    }
+    await browser.setViewport(command.width, command.height);
+  }
+
+  const result: Record<string, unknown> = {
     width: command.width,
     height: command.height,
-  });
+  };
+  if (command.deviceScaleFactor !== undefined) {
+    result.deviceScaleFactor = command.deviceScaleFactor;
+  }
+  return successResponse(command.id, result);
 }
 
 async function handleUserAgent(

@@ -263,6 +263,7 @@ export interface ViewportCommand extends BaseCommand {
   action: 'viewport';
   width: number;
   height: number;
+  deviceScaleFactor?: number;
 }
 
 // User agent
