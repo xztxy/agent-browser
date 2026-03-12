@@ -85,12 +85,19 @@ async fn connect_browserbase() -> Result<(String, Option<ProviderSession>), Stri
     let project_id = env::var("BROWSERBASE_PROJECT_ID")
         .map_err(|_| "BROWSERBASE_PROJECT_ID environment variable is not set")?;
 
+    let region = env::var("BROWSERBASE_REGION").ok();
+
+    let mut body = json!({ "projectId": project_id });
+    if let Some(ref region) = region {
+        body["region"] = json!(region);
+    }
+
     let client = reqwest::Client::new();
     let response = client
         .post("https://api.browserbase.com/v1/sessions")
         .header("Content-Type", "application/json")
         .header("X-BB-API-Key", &api_key)
-        .json(&json!({ "projectId": project_id }))
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("Browserbase request failed: {}", e))?;
