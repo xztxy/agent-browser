@@ -172,7 +172,8 @@ export class BrowserManager {
       return this.cdpEndpoint;
     }
     try {
-      return this.browser?.wsEndpoint?.() ?? null;
+      // wsEndpoint() exists on chromium Browser instances but isn't in Playwright's public types
+      return (this.browser as any)?.wsEndpoint?.() ?? null;
     } catch {
       return null;
     }

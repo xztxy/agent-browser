@@ -296,6 +296,14 @@ export interface UrlCommand extends BaseCommand {
   action: 'url';
 }
 
+export interface CdpUrlCommand extends BaseCommand {
+  action: 'cdp_url';
+}
+
+export interface InspectCommand extends BaseCommand {
+  action: 'inspect';
+}
+
 export interface TitleCommand extends BaseCommand {
   action: 'title';
 }
@@ -946,6 +954,8 @@ export type Command =
   | ForwardCommand
   | ReloadCommand
   | UrlCommand
+  | CdpUrlCommand
+  | InspectCommand
   | TitleCommand
   | GetAttributeCommand
   | GetTextCommand

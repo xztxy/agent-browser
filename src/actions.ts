@@ -1589,7 +1589,7 @@ async function handleUrl(
 function handleCdpUrl(command: Command & { action: 'cdp_url' }, browser: BrowserManager): Response {
   const cdpUrl = browser.getCdpUrl();
   if (!cdpUrl) {
-    return { id: command.id, error: 'CDP URL not available (browser may not be launched)' };
+    return errorResponse(command.id, 'CDP URL not available (browser may not be launched)');
   }
   return successResponse(command.id, { cdpUrl });
 }
@@ -1602,7 +1602,7 @@ async function handleInspect(
 ): Promise<Response> {
   const cdpUrl = browser.getCdpUrl();
   if (!cdpUrl) {
-    return { id: command.id, error: 'CDP URL not available (browser may not be launched)' };
+    return errorResponse(command.id, 'CDP URL not available (browser may not be launched)');
   }
 
   // Shut down any existing inspect server so we always target the current page
@@ -1626,7 +1626,7 @@ async function handleInspect(
   await tmpCdp.detach();
 
   if (!targetId) {
-    return { id: command.id, error: 'Could not determine target ID for active page' };
+    return errorResponse(command.id, 'Could not determine target ID for active page');
   }
 
   const { InspectServer } = await import('./inspect-server.js');
