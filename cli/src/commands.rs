@@ -399,9 +399,8 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                         context: "wait --text".to_string(),
                         usage: "wait --text <text>",
                     })?;
-                // Use getByText locator to wait for text to appear
                 return Ok(
-                    json!({ "id": id, "action": "wait", "selector": format!("text={}", text) }),
+                    json!({ "id": id, "action": "wait", "text": text }),
                 );
             }
 
@@ -475,7 +474,7 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                 _ => (None, None),
             };
             Ok(
-                json!({ "id": id, "action": "screenshot", "path": path, "selector": selector, "fullPage": flags.full, "annotate": flags.annotate }),
+                json!({ "id": id, "action": "screenshot", "path": path, "selector": selector, "fullPage": flags.full, "annotate": flags.annotate, "format": flags.screenshot_format, "quality": flags.screenshot_quality, "screenshotDir": flags.screenshot_dir }),
             )
         }
         "pdf" => {
@@ -1107,6 +1106,33 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                 usage: "highlight <selector>",
             })?;
             Ok(json!({ "id": id, "action": "highlight", "selector": sel }))
+        }
+
+        // === Clipboard ===
+        "clipboard" => {
+            const VALID: &[&str] = &["read", "write", "copy", "paste"];
+            match rest.first().copied() {
+                Some("read") | None => {
+                    Ok(json!({ "id": id, "action": "clipboard", "operation": "read" }))
+                }
+                Some("write") => {
+                    let text = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
+                        context: "clipboard write".to_string(),
+                        usage: "clipboard write <text>",
+                    })?;
+                    Ok(json!({ "id": id, "action": "clipboard", "operation": "write", "text": text }))
+                }
+                Some("copy") => {
+                    Ok(json!({ "id": id, "action": "clipboard", "operation": "copy" }))
+                }
+                Some("paste") => {
+                    Ok(json!({ "id": id, "action": "clipboard", "operation": "paste" }))
+                }
+                Some(sub) => Err(ParseError::UnknownSubcommand {
+                    subcommand: sub.to_string(),
+                    valid_options: VALID,
+                }),
+            }
         }
 
         // === State ===
@@ -2133,6 +2159,9 @@ mod tests {
             confirm_interactive: false,
             native: false,
             engine: None,
+            screenshot_dir: None,
+            screenshot_quality: None,
+            screenshot_format: None,
         }
     }
 
@@ -2749,7 +2778,7 @@ mod tests {
     fn test_wait_text() {
         let cmd = parse_command(&args("wait --text Welcome"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "wait");
-        assert_eq!(cmd["selector"], "text=Welcome");
+        assert_eq!(cmd["text"], "Welcome");
     }
 
     // === Unknown command ===

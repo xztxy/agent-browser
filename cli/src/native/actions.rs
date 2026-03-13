@@ -1415,6 +1415,10 @@ async fn handle_screenshot(cmd: &Value, state: &mut DaemonState) -> Result<Value
             .and_then(|v| v.as_i64())
             .map(|q| q as i32),
         annotate,
+        output_dir: cmd
+            .get("screenshotDir")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     };
 
     if annotate {
@@ -3107,8 +3111,10 @@ async fn handle_clipboard(cmd: &Value, state: &DaemonState) -> Result<Value, Str
         .and_then(|v| v.as_str())
         .unwrap_or("read");
 
+    let session_id = mgr.active_session_id()?.to_string();
+
     match action {
-        "write" | "copy" => {
+        "write" => {
             let text = cmd
                 .get("text")
                 .or_else(|| cmd.get("value"))
@@ -3119,7 +3125,57 @@ async fn handle_clipboard(cmd: &Value, state: &DaemonState) -> Result<Value, Str
                 serde_json::to_string(text).unwrap_or_default()
             );
             mgr.evaluate(&js, None).await?;
-            Ok(json!({ "copied": text }))
+            Ok(json!({ "written": text }))
+        }
+        "copy" => {
+            let params = serde_json::json!({
+                "type": "keyDown",
+                "modifiers": 2,
+                "key": "c",
+                "code": "KeyC",
+                "windowsVirtualKeyCode": 67,
+                "nativeVirtualKeyCode": 67,
+            });
+            mgr.client
+                .send_command("Input.dispatchKeyEvent", Some(params), Some(&session_id))
+                .await?;
+            let up_params = serde_json::json!({
+                "type": "keyUp",
+                "modifiers": 2,
+                "key": "c",
+                "code": "KeyC",
+                "windowsVirtualKeyCode": 67,
+                "nativeVirtualKeyCode": 67,
+            });
+            mgr.client
+                .send_command("Input.dispatchKeyEvent", Some(up_params), Some(&session_id))
+                .await?;
+            Ok(json!({ "copied": true }))
+        }
+        "paste" => {
+            let params = serde_json::json!({
+                "type": "keyDown",
+                "modifiers": 2,
+                "key": "v",
+                "code": "KeyV",
+                "windowsVirtualKeyCode": 86,
+                "nativeVirtualKeyCode": 86,
+            });
+            mgr.client
+                .send_command("Input.dispatchKeyEvent", Some(params), Some(&session_id))
+                .await?;
+            let up_params = serde_json::json!({
+                "type": "keyUp",
+                "modifiers": 2,
+                "key": "v",
+                "code": "KeyV",
+                "windowsVirtualKeyCode": 86,
+                "nativeVirtualKeyCode": 86,
+            });
+            mgr.client
+                .send_command("Input.dispatchKeyEvent", Some(up_params), Some(&session_id))
+                .await?;
+            Ok(json!({ "pasted": true }))
         }
         _ => {
             let result = mgr.evaluate("navigator.clipboard.readText()", None).await?;
@@ -4190,6 +4246,7 @@ async fn handle_diff_screenshot(cmd: &Value, state: &DaemonState) -> Result<Valu
         format: "png".to_string(),
         quality: None,
         annotate: false,
+        output_dir: None,
     };
 
     let result =
