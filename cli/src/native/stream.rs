@@ -47,38 +47,9 @@ impl StreamServer {
         client: Arc<CdpClient>,
         session_id: String,
     ) -> Result<Self, String> {
-        let addr = format!("127.0.0.1:{}", preferred_port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|e| format!("Failed to bind stream server: {}", e))?;
-
-        let actual_addr = listener
-            .local_addr()
-            .map_err(|e| format!("Failed to get stream address: {}", e))?;
-        let port = actual_addr.port();
-
-        let (frame_tx, _) = broadcast::channel::<String>(64);
-        let client_count = Arc::new(Mutex::new(0usize));
-
-        let frame_tx_clone = frame_tx.clone();
-        let client_count_clone = client_count.clone();
-
-        tokio::spawn(async move {
-            accept_loop(
-                listener,
-                frame_tx_clone,
-                client_count_clone,
-                client,
-                session_id,
-            )
-            .await;
-        });
-
-        Ok(Self {
-            port,
-            frame_tx,
-            client_count,
-        })
+        let client_slot = Arc::new(RwLock::new(Some(client)));
+        let (server, _) = Self::start_inner(preferred_port, client_slot, session_id).await?;
+        Ok(server)
     }
 
     /// Start the stream server without a CDP client (e.g. at daemon startup before browser launch).
@@ -86,6 +57,15 @@ impl StreamServer {
     /// Input messages are ignored until the client is set.
     pub async fn start_without_client(
         preferred_port: u16,
+        session_id: String,
+    ) -> Result<(Self, Arc<RwLock<Option<Arc<CdpClient>>>>), String> {
+        let client_slot = Arc::new(RwLock::new(None::<Arc<CdpClient>>));
+        Self::start_inner(preferred_port, client_slot, session_id).await
+    }
+
+    async fn start_inner(
+        preferred_port: u16,
+        client_slot: Arc<RwLock<Option<Arc<CdpClient>>>>,
         session_id: String,
     ) -> Result<(Self, Arc<RwLock<Option<Arc<CdpClient>>>>), String> {
         let addr = format!("127.0.0.1:{}", preferred_port);
@@ -100,21 +80,14 @@ impl StreamServer {
 
         let (frame_tx, _) = broadcast::channel::<String>(64);
         let client_count = Arc::new(Mutex::new(0usize));
-        let client_slot = Arc::new(RwLock::new(None::<Arc<CdpClient>>));
 
         let frame_tx_clone = frame_tx.clone();
         let client_count_clone = client_count.clone();
         let client_slot_clone = client_slot.clone();
 
         tokio::spawn(async move {
-            accept_loop_without_client(
-                listener,
-                frame_tx_clone,
-                client_count_clone,
-                client_slot_clone,
-                session_id,
-            )
-            .await;
+            accept_loop(listener, frame_tx_clone, client_count_clone, client_slot_clone, session_id)
+                .await;
         });
 
         Ok((
@@ -186,25 +159,6 @@ async fn accept_loop(
     listener: TcpListener,
     frame_tx: broadcast::Sender<String>,
     client_count: Arc<Mutex<usize>>,
-    cdp_client: Arc<CdpClient>,
-    session_id: String,
-) {
-    while let Ok((stream, addr)) = listener.accept().await {
-        let frame_rx = frame_tx.subscribe();
-        let client_count = client_count.clone();
-        let cdp = cdp_client.clone();
-        let sid = session_id.clone();
-
-        tokio::spawn(async move {
-            handle_ws_client(stream, addr, frame_rx, client_count, cdp, sid).await;
-        });
-    }
-}
-
-async fn accept_loop_without_client(
-    listener: TcpListener,
-    frame_tx: broadcast::Sender<String>,
-    client_count: Arc<Mutex<usize>>,
     client_slot: Arc<RwLock<Option<Arc<CdpClient>>>>,
     session_id: String,
 ) {
@@ -215,84 +169,13 @@ async fn accept_loop_without_client(
         let sid = session_id.clone();
 
         tokio::spawn(async move {
-            handle_ws_client_optional(stream, addr, frame_rx, client_count, client_slot, sid).await;
+            handle_ws_client(stream, addr, frame_rx, client_count, client_slot, sid).await;
         });
     }
 }
 
 #[allow(clippy::result_large_err)]
 async fn handle_ws_client(
-    stream: tokio::net::TcpStream,
-    _addr: SocketAddr,
-    mut frame_rx: broadcast::Receiver<String>,
-    client_count: Arc<Mutex<usize>>,
-    cdp_client: Arc<CdpClient>,
-    session_id: String,
-) {
-    // Origin checking on WebSocket handshake
-    let callback =
-        |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
-         resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
-            let origin = req
-                .headers()
-                .get("origin")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            if !is_allowed_origin(origin.as_deref()) {
-                let mut reject =
-                    tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some(
-                        "Origin not allowed".to_string(),
-                    ));
-                *reject.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
-                return Err(reject);
-            }
-            Ok(resp)
-        };
-
-    let ws_stream = match tokio_tungstenite::accept_hdr_async(stream, callback).await {
-        Ok(ws) => ws,
-        Err(_) => return,
-    };
-
-    {
-        let mut count = client_count.lock().await;
-        *count += 1;
-    }
-
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
-
-    loop {
-        tokio::select! {
-            frame = frame_rx.recv() => {
-                match frame {
-                    Ok(data) => {
-                        if ws_tx.send(Message::Text(data)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            msg = ws_rx.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        handle_client_message(&text, &cdp_client, &session_id).await;
-                    }
-                    Some(Ok(Message::Close(_))) | None => break,
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    {
-        let mut count = client_count.lock().await;
-        *count = count.saturating_sub(1);
-    }
-}
-
-#[allow(clippy::result_large_err)]
-async fn handle_ws_client_optional(
     stream: tokio::net::TcpStream,
     _addr: SocketAddr,
     mut frame_rx: broadcast::Receiver<String>,
@@ -346,7 +229,10 @@ async fn handle_ws_client_optional(
             msg = ws_rx.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message_optional(&text, &client_slot, &session_id).await;
+                        let guard = client_slot.read().await;
+                        if let Some(ref client) = *guard {
+                            handle_client_message(&text, client.as_ref(), &session_id).await;
+                        }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
@@ -359,18 +245,6 @@ async fn handle_ws_client_optional(
         let mut count = client_count.lock().await;
         *count = count.saturating_sub(1);
     }
-}
-
-async fn handle_client_message_optional(
-    msg: &str,
-    client_slot: &RwLock<Option<Arc<CdpClient>>>,
-    session_id: &str,
-) {
-    let guard = client_slot.read().await;
-    if let Some(ref client) = *guard {
-        handle_client_message(msg, client.as_ref(), session_id).await;
-    }
-    // When None, ignore input messages (browser not launched)
 }
 
 async fn handle_client_message(msg: &str, client: &CdpClient, session_id: &str) {

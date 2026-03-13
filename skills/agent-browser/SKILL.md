@@ -487,6 +487,12 @@ agent-browser --session agent1 close   # Close specific session
 
 If a previous session was not closed properly, the daemon may still be running. Use `agent-browser close` to clean it up before starting new work.
 
+To auto-shutdown the daemon after a period of inactivity (useful for ephemeral/CI environments):
+
+```bash
+AGENT_BROWSER_IDLE_TIMEOUT_MS=60000 agent-browser open example.com
+```
+
 ## Ref Lifecycle (Important)
 
 Refs (`@e1`, `@e2`, etc.) are invalidated when the page changes. Always re-snapshot after:

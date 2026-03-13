@@ -109,10 +109,6 @@ fn platform_key() -> &'static str {
     {
         "linux64"
     }
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    {
-        "linux64"
-    }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
         "win64"
@@ -121,108 +117,98 @@ fn platform_key() -> &'static str {
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "macos", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "windows", target_arch = "x86_64"),
     )))]
     {
-        compile_error!("Unsupported platform for Chrome for Testing download")
+        // Compiles on unsupported platforms (e.g. linux aarch64) so the binary
+        // can still be used for other commands like `connect`. The install path
+        // guards against this at runtime before calling platform_key().
+        panic!("Unsupported platform for Chrome for Testing download")
     }
 }
 
-fn fetch_download_url() -> Result<(String, String), String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("Failed to create runtime: {}", e))?;
+async fn fetch_download_url() -> Result<(String, String), String> {
+    let resp = reqwest::get(LAST_KNOWN_GOOD_URL)
+        .await
+        .map_err(|e| format!("Failed to fetch version info: {}", e))?;
 
-    rt.block_on(async {
-        let resp = reqwest::get(LAST_KNOWN_GOOD_URL)
-            .await
-            .map_err(|e| format!("Failed to fetch version info: {}", e))?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse version info: {}", e))?;
 
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse version info: {}", e))?;
+    let channel = body
+        .get("channels")
+        .and_then(|c| c.get("Stable"))
+        .ok_or("No Stable channel found in version info")?;
 
-        let channel = body
-            .get("channels")
-            .and_then(|c| c.get("Stable"))
-            .ok_or("No Stable channel found in version info")?;
+    let version = channel
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or("No version string found")?
+        .to_string();
 
-        let version = channel
-            .get("version")
-            .and_then(|v| v.as_str())
-            .ok_or("No version string found")?
-            .to_string();
+    let platform = platform_key();
 
-        let platform = platform_key();
-
-        let url = channel
-            .get("downloads")
-            .and_then(|d| d.get("chrome"))
-            .and_then(|c| c.as_array())
-            .and_then(|arr| {
-                arr.iter().find_map(|entry| {
-                    if entry.get("platform")?.as_str()? == platform {
-                        Some(entry.get("url")?.as_str()?.to_string())
-                    } else {
-                        None
-                    }
-                })
+    let url = channel
+        .get("downloads")
+        .and_then(|d| d.get("chrome"))
+        .and_then(|c| c.as_array())
+        .and_then(|arr| {
+            arr.iter().find_map(|entry| {
+                if entry.get("platform")?.as_str()? == platform {
+                    Some(entry.get("url")?.as_str()?.to_string())
+                } else {
+                    None
+                }
             })
-            .ok_or_else(|| format!("No download URL found for platform: {}", platform))?;
+        })
+        .ok_or_else(|| format!("No download URL found for platform: {}", platform))?;
 
-        Ok((version, url))
-    })
+    Ok((version, url))
 }
 
-fn download_and_extract(url: &str, dest: &Path) -> Result<(), String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("Failed to create runtime: {}", e))?;
+async fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let resp = reqwest::get(url)
+        .await
+        .map_err(|e| format!("Download failed: {}", e))?;
 
-    let bytes = rt.block_on(async {
-        let resp = reqwest::get(url)
+    let total = resp.content_length();
+    let mut bytes = Vec::new();
+    let mut stream = resp;
+    let mut downloaded: u64 = 0;
+    let mut last_pct: u64 = 0;
+
+    loop {
+        let chunk = stream
+            .chunk()
             .await
-            .map_err(|e| format!("Download failed: {}", e))?;
+            .map_err(|e| format!("Download error: {}", e))?;
+        match chunk {
+            Some(data) => {
+                downloaded += data.len() as u64;
+                bytes.extend_from_slice(&data);
 
-        let total = resp.content_length();
-        let mut bytes = Vec::new();
-        let mut stream = resp;
-        let mut downloaded: u64 = 0;
-        let mut last_pct: u64 = 0;
-
-        loop {
-            let chunk = stream
-                .chunk()
-                .await
-                .map_err(|e| format!("Download error: {}", e))?;
-            match chunk {
-                Some(data) => {
-                    downloaded += data.len() as u64;
-                    bytes.extend_from_slice(&data);
-
-                    if let Some(total) = total {
-                        let pct = (downloaded * 100) / total;
-                        if pct >= last_pct + 5 {
-                            last_pct = pct;
-                            let mb = downloaded as f64 / 1_048_576.0;
-                            let total_mb = total as f64 / 1_048_576.0;
-                            eprint!("\r  {:.0}/{:.0} MB ({pct}%)", mb, total_mb);
-                            let _ = io::stderr().flush();
-                        }
+                if let Some(total) = total {
+                    let pct = (downloaded * 100) / total;
+                    if pct >= last_pct + 5 {
+                        last_pct = pct;
+                        let mb = downloaded as f64 / 1_048_576.0;
+                        let total_mb = total as f64 / 1_048_576.0;
+                        eprint!("\r  {:.0}/{:.0} MB ({pct}%)", mb, total_mb);
+                        let _ = io::stderr().flush();
                     }
                 }
-                None => break,
             }
+            None => break,
         }
+    }
 
-        eprintln!();
-        Ok::<Vec<u8>, String>(bytes)
-    })?;
+    eprintln!();
+    Ok(bytes)
+}
 
+fn extract_zip(bytes: Vec<u8>, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("Failed to create directory: {}", e))?;
 
     let cursor = io::Cursor::new(bytes);
@@ -284,6 +270,18 @@ fn download_and_extract(url: &str, dest: &Path) -> Result<(), String> {
 }
 
 pub fn run_install(with_deps: bool) {
+    if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        eprintln!(
+            "{} Chrome for Testing does not provide Linux ARM64 builds.",
+            color::error_indicator()
+        );
+        eprintln!("  Install Chromium from your system package manager instead:");
+        eprintln!("    sudo apt install chromium-browser   # Debian/Ubuntu");
+        eprintln!("    sudo dnf install chromium            # Fedora");
+        eprintln!("  Then use: agent-browser --executable-path /usr/bin/chromium");
+        exit(1);
+    }
+
     let is_linux = cfg!(target_os = "linux");
 
     if is_linux {
@@ -299,9 +297,21 @@ pub fn run_install(with_deps: bool) {
         }
     }
 
-    println!("{}", color::cyan("Installing Chromium browser..."));
+    println!("{}", color::cyan("Installing Chrome..."));
 
-    let (version, url) = match fetch_download_url() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "{} Failed to create runtime: {}",
+                color::error_indicator(),
+                e
+            );
+            exit(1);
+        });
+
+    let (version, url) = match rt.block_on(fetch_download_url()) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("{} {}", color::error_indicator(), e);
@@ -325,7 +335,15 @@ pub fn run_install(with_deps: bool) {
     println!("  Downloading Chrome {} for {}", version, platform_key());
     println!("  {}", url);
 
-    match download_and_extract(&url, &dest) {
+    let bytes = match rt.block_on(download_bytes(&url)) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{} {}", color::error_indicator(), e);
+            exit(1);
+        }
+    };
+
+    match extract_zip(bytes, &dest) {
         Ok(()) => {
             println!(
                 "{} Chrome {} installed successfully",

@@ -43,10 +43,12 @@ pub async fn run_daemon(session: &str) {
         if let Ok(port) = port_str.parse::<u16>() {
             if port > 0 {
                 match StreamServer::start_without_client(port, session.to_string()).await {
-                    Ok((_server, client_slot)) => {
+                    Ok((stream_server, client_slot)) => {
                         stream_client = Some(client_slot.clone());
                         let stream_path = socket_dir.join(format!("{}.stream", session));
-                        if let Err(e) = fs::write(&stream_path, _server.port().to_string()) {
+                        if let Err(e) =
+                            fs::write(&stream_path, stream_server.port().to_string())
+                        {
                             eprintln!("Failed to write .stream file: {}", e);
                         }
                     }
@@ -58,6 +60,8 @@ pub async fn run_daemon(session: &str) {
         }
     }
 
+    // Auto-shutdown the daemon after this many ms of inactivity (no commands received).
+    // Disabled when unset or 0.
     let idle_timeout_ms = env::var("AGENT_BROWSER_IDLE_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
