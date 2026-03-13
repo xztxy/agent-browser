@@ -147,7 +147,12 @@ pub async fn take_screenshot(
     } else {
         "png"
     };
-    let path = save_screenshot(&base64, options.path.as_deref(), ext, options.output_dir.as_deref())?;
+    let path = save_screenshot(
+        &base64,
+        options.path.as_deref(),
+        ext,
+        options.output_dir.as_deref(),
+    )?;
 
     Ok(ScreenshotResult {
         path,

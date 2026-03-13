@@ -399,9 +399,7 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                         context: "wait --text".to_string(),
                         usage: "wait --text <text>",
                     })?;
-                return Ok(
-                    json!({ "id": id, "action": "wait", "text": text }),
-                );
+                return Ok(json!({ "id": id, "action": "wait", "text": text }));
             }
 
             // Check for --download flag: wait --download [path] [--timeout ms]
@@ -1120,11 +1118,11 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
                         context: "clipboard write".to_string(),
                         usage: "clipboard write <text>",
                     })?;
-                    Ok(json!({ "id": id, "action": "clipboard", "operation": "write", "text": text }))
+                    Ok(
+                        json!({ "id": id, "action": "clipboard", "operation": "write", "text": text }),
+                    )
                 }
-                Some("copy") => {
-                    Ok(json!({ "id": id, "action": "clipboard", "operation": "copy" }))
-                }
+                Some("copy") => Ok(json!({ "id": id, "action": "clipboard", "operation": "copy" })),
                 Some("paste") => {
                     Ok(json!({ "id": id, "action": "clipboard", "operation": "paste" }))
                 }

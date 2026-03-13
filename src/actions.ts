@@ -2149,7 +2149,7 @@ async function handleClipboard(
       if (!command.text) {
         return errorResponse(command.id, "Missing 'text' parameter for clipboard write");
       }
-      await page.evaluate((t: string) => navigator.clipboard.writeText(t), command.text);
+      await page.evaluate(`navigator.clipboard.writeText(${JSON.stringify(command.text)})`);
       return successResponse(command.id, { written: command.text });
     }
     default:
