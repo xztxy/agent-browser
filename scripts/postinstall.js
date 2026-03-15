@@ -171,7 +171,7 @@ function showInstallReminder() {
 
   console.log('');
   console.log('  ⚠ No Chrome installation detected.');
-  console.log('  To download Chrome, run:');
+  console.log('  If you plan to use a local browser, run:');
   console.log('');
   console.log('    agent-browser install');
   if (platform() === 'linux') {
@@ -181,7 +181,7 @@ function showInstallReminder() {
     console.log('    agent-browser install --with-deps');
   }
   console.log('');
-  console.log('  Or use --executable-path to specify a custom browser.');
+  console.log('  You can skip this if you use --cdp, --provider, --engine, or --executable-path.');
   console.log('');
 }
 
