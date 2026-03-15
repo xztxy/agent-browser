@@ -171,9 +171,7 @@ pub async fn type_text(
             client
                 .send_command_typed::<_, Value>(
                     "Input.insertText",
-                    &InsertTextParams {
-                        text: text_str,
-                    },
+                    &InsertTextParams { text: text_str },
                     Some(session_id),
                 )
                 .await?;
