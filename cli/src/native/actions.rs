@@ -973,9 +973,10 @@ fn launch_options_from_env() -> LaunchOptions {
         proxy: env::var("AGENT_BROWSER_PROXY").ok(),
         proxy_bypass: env::var("AGENT_BROWSER_PROXY_BYPASS").ok(),
         profile: env::var("AGENT_BROWSER_PROFILE").ok().map(|p| {
-            let session =
-                env::var("AGENT_BROWSER_SESSION").unwrap_or_else(|_| "default".to_string());
-            session_scoped_profile(&p, &session)
+            match env::var("AGENT_BROWSER_SESSION").ok() {
+                Some(session) => session_scoped_profile(&p, &session),
+                None => p,
+            }
         }),
         allow_file_access: env::var("AGENT_BROWSER_ALLOW_FILE_ACCESS")
             .map(|v| v == "1" || v == "true")
@@ -5939,15 +5940,15 @@ mod tests {
     }
 
     #[test]
-    fn test_launch_options_from_env_profile_default_session_fallback() {
+    fn test_launch_options_from_env_profile_without_session() {
         let _guard = EnvGuard::new(&["AGENT_BROWSER_PROFILE", "AGENT_BROWSER_SESSION"]);
         _guard.set("AGENT_BROWSER_PROFILE", "/tmp/test-profile");
-        _guard.remove("AGENT_BROWSER_SESSION"); // ensure fallback to "default"
+        _guard.remove("AGENT_BROWSER_SESSION"); // no session set
         let opts = launch_options_from_env();
         assert_eq!(
             opts.profile.as_deref(),
-            Some("/tmp/test-profile/default"),
-            "profile should append 'default' when session is unset"
+            Some("/tmp/test-profile"),
+            "profile should be unchanged when session is unset"
         );
     }
 
