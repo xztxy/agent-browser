@@ -31,6 +31,9 @@ pub async fn run_daemon(session: &str) {
         let _ = fs::remove_file(&socket_path);
     }
 
+    let stream_path = socket_dir.join(format!("{}.stream", session));
+    let _ = fs::remove_file(&stream_path);
+
     if let Ok(days_str) = env::var("AGENT_BROWSER_STATE_EXPIRE_DAYS") {
         if let Ok(days) = days_str.parse::<u64>() {
             if days > 0 {
@@ -47,7 +50,6 @@ pub async fn run_daemon(session: &str) {
                 match StreamServer::start_without_client(port, session.to_string()).await {
                     Ok((stream_server, client_slot)) => {
                         stream_client = Some(client_slot.clone());
-                        let stream_path = socket_dir.join(format!("{}.stream", session));
                         if let Err(e) = fs::write(&stream_path, stream_server.port().to_string()) {
                             let _ =
                                 writeln!(std::io::stderr(), "Failed to write .stream file: {}", e);
@@ -80,7 +82,6 @@ pub async fn run_daemon(session: &str) {
 
     let _ = fs::remove_file(&socket_path);
     let _ = fs::remove_file(&pid_path);
-    let stream_path = socket_dir.join(format!("{}.stream", session));
     let _ = fs::remove_file(&stream_path);
 
     if let Err(e) = result {
@@ -116,6 +117,12 @@ async fn run_socket_server(
     let (reset_tx, mut reset_rx) = mpsc::channel::<()>(64);
     let reset_tx = idle_timeout_ms.map(|_| Arc::new(reset_tx));
 
+    // Listen for SIGCHLD to reap zombie child processes (e.g. crashed Chrome).
+    // Without this, a crashed Chrome becomes <defunct> and is never reaped until
+    // the daemon exits.
+    let mut sigchld = signal::unix::signal(signal::unix::SignalKind::child())
+        .map_err(|e| format!("Failed to install SIGCHLD handler: {}", e))?;
+
     loop {
         let sleep_future = idle_timeout_ms.map(|ms| tokio::time::sleep(Duration::from_millis(ms)));
         let mut sleep_pin = sleep_future.map(Box::pin);
@@ -135,6 +142,12 @@ async fn run_socket_server(
                         let _ = writeln!(std::io::stderr(), "Accept error: {}", e);
                     }
                 }
+            }
+            _ = sigchld.recv() => {
+                // Reap all zombie children. The browser will be re-launched
+                // automatically on the next command via the has_process_exited()
+                // check in execute_command.
+                reap_children();
             }
             _ = async {
                 if let Some(ref mut s) = sleep_pin {
@@ -163,6 +176,17 @@ async fn run_socket_server(
     }
 
     Ok(())
+}
+
+/// Reap all zombie child processes by calling waitpid(-1, WNOHANG) in a loop.
+#[cfg(unix)]
+fn reap_children() {
+    loop {
+        let result = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
+        if result <= 0 {
+            break;
+        }
+    }
 }
 
 #[cfg(windows)]

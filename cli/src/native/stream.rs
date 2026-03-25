@@ -6,7 +6,7 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, Mutex, Notify, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, Notify, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::cdp::client::CdpClient;
@@ -50,6 +50,9 @@ pub struct StreamServer {
     viewport_height: Arc<Mutex<u32>>,
     dashboard_dir: Option<PathBuf>,
     last_tabs: Arc<RwLock<Vec<Value>>>,
+    shutdown_tx: watch::Sender<bool>,
+    accept_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    cdp_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl StreamServer {
@@ -59,11 +62,11 @@ impl StreamServer {
         session_id: String,
     ) -> Result<Self, String> {
         let client_slot = Arc::new(RwLock::new(Some(client)));
-        let (server, _) = Self::start_inner(preferred_port, client_slot, session_id).await?;
+        let (server, _) = Self::start_inner(preferred_port, client_slot, session_id, true).await?;
         Ok(server)
     }
 
-    /// Start the stream server without a CDP client (e.g. at daemon startup before browser launch).
+    /// Start the stream server without a CDP client (e.g. for runtime `stream_enable`).
     /// Returns the server and a shared slot to set the client when the browser launches.
     /// Input messages are ignored until the client is set.
     pub async fn start_without_client(
@@ -71,7 +74,7 @@ impl StreamServer {
         session_id: String,
     ) -> Result<(Self, Arc<RwLock<Option<Arc<CdpClient>>>>), String> {
         let client_slot = Arc::new(RwLock::new(None::<Arc<CdpClient>>));
-        Self::start_inner(preferred_port, client_slot, session_id).await
+        Self::start_inner(preferred_port, client_slot, session_id, false).await
     }
 
     /// Resolve the dashboard directory if it exists.
@@ -113,17 +116,38 @@ impl StreamServer {
         (w, h)
     }
 
+    /// Override the cached screencast state for explicit CLI start/stop commands.
+    pub async fn set_screencasting(&self, active: bool) {
+        let mut guard = self.screencasting.lock().await;
+        *guard = active;
+    }
+
+    /// Shut down the accept loop and background CDP listener, releasing the bound port.
+    pub async fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+
+        if let Some(task) = self.accept_task.lock().await.take() {
+            let _ = task.await;
+        }
+        if let Some(task) = self.cdp_task.lock().await.take() {
+            let _ = task.await;
+        }
+    }
+
     async fn start_inner(
         preferred_port: u16,
         client_slot: Arc<RwLock<Option<Arc<CdpClient>>>>,
         _session_id: String,
+        allow_port_fallback: bool,
     ) -> Result<(Self, Arc<RwLock<Option<Arc<CdpClient>>>>), String> {
         let addr = format!("127.0.0.1:{}", preferred_port);
         let listener = match TcpListener::bind(&addr).await {
             Ok(l) => l,
-            Err(_) if preferred_port != 0 => TcpListener::bind("127.0.0.1:0")
-                .await
-                .map_err(|e| format!("Failed to bind stream server: {}", e))?,
+            Err(_) if allow_port_fallback && preferred_port != 0 => {
+                TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .map_err(|e| format!("Failed to bind stream server: {}", e))?
+            }
             Err(e) => return Err(format!("Failed to bind stream server: {}", e)),
         };
 
@@ -142,6 +166,7 @@ impl StreamServer {
         let viewport_width = Arc::new(Mutex::new(1280u32));
         let viewport_height = Arc::new(Mutex::new(720u32));
         let last_tabs = Arc::new(RwLock::new(Vec::<Value>::new()));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let frame_tx_clone = frame_tx.clone();
         let client_count_clone = client_count.clone();
@@ -154,7 +179,8 @@ impl StreamServer {
         let vh_clone = viewport_height.clone();
         let dashboard_dir_clone = dashboard_dir.clone();
         let last_tabs_clone = last_tabs.clone();
-        tokio::spawn(async move {
+        let accept_shutdown_rx = shutdown_rx.clone();
+        let accept_task = tokio::spawn(async move {
             accept_loop(
                 listener,
                 frame_tx_clone,
@@ -167,6 +193,7 @@ impl StreamServer {
                 vh_clone,
                 dashboard_dir_clone,
                 last_tabs_clone,
+                accept_shutdown_rx,
             )
             .await;
         });
@@ -180,7 +207,7 @@ impl StreamServer {
         let cdp_session_bg = cdp_session_id.clone();
         let vw_bg = viewport_width.clone();
         let vh_bg = viewport_height.clone();
-        tokio::spawn(async move {
+        let cdp_task = tokio::spawn(async move {
             cdp_event_loop(
                 frame_tx_bg,
                 client_slot_bg,
@@ -190,6 +217,7 @@ impl StreamServer {
                 cdp_session_bg,
                 vw_bg,
                 vh_bg,
+                shutdown_rx,
             )
             .await;
         });
@@ -207,6 +235,9 @@ impl StreamServer {
                 viewport_height,
                 dashboard_dir,
                 last_tabs,
+                shutdown_tx,
+                accept_task: Mutex::new(Some(accept_task)),
+                cdp_task: Mutex::new(Some(cdp_task)),
             },
             client_slot,
         ))
@@ -312,9 +343,9 @@ impl StreamServer {
 
     /// Broadcast the current tab list so the dashboard can render a tab bar.
     /// Also caches the list so newly connected WebSocket clients receive it immediately.
-    pub fn broadcast_tabs(&self, tabs: &[Value]) {
+    pub async fn broadcast_tabs(&self, tabs: &[Value]) {
         {
-            let mut guard = self.last_tabs.blocking_write();
+            let mut guard = self.last_tabs.write().await;
             *guard = tabs.to_vec();
         }
         let msg = json!({
@@ -344,37 +375,52 @@ async fn accept_loop(
     viewport_height: Arc<Mutex<u32>>,
     dashboard_dir: Option<PathBuf>,
     last_tabs: Arc<RwLock<Vec<Value>>>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let dashboard_dir = dashboard_dir.map(Arc::from);
-    while let Ok((stream, addr)) = listener.accept().await {
-        let frame_tx = frame_tx.clone();
-        let client_count = client_count.clone();
-        let client_slot = client_slot.clone();
-        let client_notify = client_notify.clone();
-        let screencasting = screencasting.clone();
-        let cdp_session_id = cdp_session_id.clone();
-        let vw = viewport_width.clone();
-        let vh = viewport_height.clone();
-        let dd = dashboard_dir.clone();
-        let lt = last_tabs.clone();
+    loop {
+        tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+            accept_result = listener.accept() => {
+                let Ok((stream, addr)) = accept_result else {
+                    break;
+                };
+                let frame_tx = frame_tx.clone();
+                let client_count = client_count.clone();
+                let client_slot = client_slot.clone();
+                let client_notify = client_notify.clone();
+                let screencasting = screencasting.clone();
+                let cdp_session_id = cdp_session_id.clone();
+                let vw = viewport_width.clone();
+                let vh = viewport_height.clone();
+                let dd = dashboard_dir.clone();
+                let lt = last_tabs.clone();
+                let shutdown_rx = shutdown_rx.clone();
 
-        tokio::spawn(async move {
-            handle_connection(
-                stream,
-                addr,
-                frame_tx,
-                client_count,
-                client_slot,
-                client_notify,
-                screencasting,
-                cdp_session_id,
-                vw,
-                vh,
-                dd,
-                lt,
-            )
-            .await;
-        });
+                tokio::spawn(async move {
+                    handle_connection(
+                        stream,
+                        addr,
+                        frame_tx,
+                        client_count,
+                        client_slot,
+                        client_notify,
+                        screencasting,
+                        cdp_session_id,
+                        vw,
+                        vh,
+                        dd,
+                        lt,
+                        shutdown_rx,
+                    )
+                    .await;
+                });
+            }
+        }
     }
 }
 
@@ -393,6 +439,7 @@ async fn handle_connection(
     viewport_height: Arc<Mutex<u32>>,
     dashboard_dir: Option<Arc<PathBuf>>,
     last_tabs: Arc<RwLock<Vec<Value>>>,
+    shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut buf = [0u8; 4096];
     let n = match stream.peek(&mut buf).await {
@@ -415,6 +462,7 @@ async fn handle_connection(
             viewport_width,
             viewport_height,
             last_tabs,
+            shutdown_rx,
         )
         .await;
     } else {
@@ -440,6 +488,7 @@ async fn handle_ws_client(
     viewport_width: Arc<Mutex<u32>>,
     viewport_height: Arc<Mutex<u32>>,
     last_tabs: Arc<RwLock<Vec<Value>>>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let callback =
         |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
@@ -504,6 +553,12 @@ async fn handle_ws_client(
 
     loop {
         tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    let _ = ws_tx.send(Message::Close(None)).await;
+                    break;
+                }
+            }
             frame = frame_rx.recv() => {
                 match frame {
                     Ok(data) => {
@@ -555,10 +610,28 @@ async fn cdp_event_loop(
     cdp_session_id: Arc<RwLock<Option<String>>>,
     viewport_width: Arc<Mutex<u32>>,
     viewport_height: Arc<Mutex<u32>>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
     loop {
         // Wait until we're notified of a client/connection change
-        client_notify.notified().await;
+        tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    let session_id = cdp_session_id.read().await.clone();
+                    if *screencasting.lock().await {
+                        if let Some(ref client) = *client_slot.read().await {
+                            let _ = client
+                                .send_command_no_params("Page.stopScreencast", session_id.as_deref())
+                                .await;
+                        }
+                        let mut sc = screencasting.lock().await;
+                        *sc = false;
+                    }
+                    return;
+                }
+            }
+            _ = client_notify.notified() => {}
+        }
 
         // Check if we have WS clients and a CDP client
         let count = *client_count.lock().await;
@@ -610,6 +683,17 @@ async fn cdp_event_loop(
                 // Process CDP events in real-time until client disconnects or CDP closes
                 loop {
                     tokio::select! {
+                        changed = shutdown_rx.changed() => {
+                            if changed.is_err() || *shutdown_rx.borrow() {
+                                let session_id = cdp_session_id.read().await.clone();
+                                let _ = client_arc
+                                    .send_command_no_params("Page.stopScreencast", session_id.as_deref())
+                                    .await;
+                                let mut sc = screencasting.lock().await;
+                                *sc = false;
+                                return;
+                            }
+                        }
                         event = event_rx.recv() => {
                             match event {
                                 Ok(evt) => {

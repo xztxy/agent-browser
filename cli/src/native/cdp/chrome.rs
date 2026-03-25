@@ -17,6 +17,17 @@ impl ChromeProcess {
         let _ = self.child.wait();
     }
 
+    /// Returns the OS process ID of the Chrome child process.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Non-blocking check whether Chrome has exited.
+    /// Returns `true` if the process has exited (and reaps it), `false` if still running.
+    pub fn has_exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)) | Err(_))
+    }
+
     /// Wait for Chrome to exit on its own (after Browser.close CDP command),
     /// falling back to kill() if it doesn't exit within the timeout.
     /// This allows Chrome to flush cookies and other state to the user-data-dir.
@@ -839,8 +850,22 @@ mod tests {
 
     #[test]
     fn test_find_playwright_chromium_nonexistent() {
-        let _guard = EnvGuard::new(&["PLAYWRIGHT_BROWSERS_PATH"]);
-        _guard.set("PLAYWRIGHT_BROWSERS_PATH", "/nonexistent/path");
+        let guard = EnvGuard::new(&["PLAYWRIGHT_BROWSERS_PATH", "HOME", "USERPROFILE"]);
+        guard.set("PLAYWRIGHT_BROWSERS_PATH", "/nonexistent/path");
+
+        let temp_home = std::env::temp_dir().join(format!(
+            "agent-browser-test-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_home).expect("temp home should be created");
+        let temp_home = temp_home.to_string_lossy().to_string();
+        guard.set("HOME", &temp_home);
+        guard.set("USERPROFILE", &temp_home);
+
         let result = find_playwright_chromium();
         assert!(result.is_none());
     }

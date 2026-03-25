@@ -1,12 +1,15 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::{broadcast, oneshot, RwLock};
+
+use crate::connection::get_socket_dir;
 
 use super::auth;
 use super::browser::{should_track_target, BrowserManager, WaitUntil};
@@ -409,9 +412,9 @@ impl DaemonState {
             let (vw, vh) = server.viewport().await;
             server.broadcast_status(connected, sc, vw, vh);
             if let Some(ref mgr) = self.browser {
-                server.broadcast_tabs(&mgr.tab_list());
+                server.broadcast_tabs(&mgr.tab_list()).await;
             } else {
-                server.broadcast_tabs(&[]);
+                server.broadcast_tabs(&[]).await;
             }
             // Notify the background CDP event loop that the client changed
             server.notify_client_changed();
@@ -1005,11 +1008,16 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
             | "state_clean"
             | "state_rename"
             | "device_list"
+            | "stream_enable"
+            | "stream_disable"
+            | "stream_status"
     );
     if !skip_launch {
-        // Check if existing connection is stale and needs re-launch
-        let needs_launch = if let Some(ref mgr) = state.browser {
-            !mgr.is_connection_alive().await
+        // Check if existing connection is stale and needs re-launch.
+        // First do a fast, non-blocking check: did the browser process crash/exit?
+        // This avoids a 3-second CDP timeout when Chrome is already dead.
+        let needs_launch = if let Some(ref mut mgr) = state.browser {
+            mgr.has_process_exited() || !mgr.is_connection_alive().await
         } else {
             true
         };
@@ -1020,6 +1028,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                     let _ = mgr.close().await;
                 }
                 state.browser = None;
+                state.screencasting = false;
                 state.reset_input_state();
                 state.update_stream_client().await;
             }
@@ -1088,7 +1097,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "setcontent" => handle_setcontent(cmd, state).await,
         "headers" => handle_headers(cmd, state).await,
         "offline" => handle_offline(cmd, state).await,
-        "console" => handle_console(state).await,
+        "console" => handle_console(cmd, state).await,
         "errors" => handle_errors(state).await,
         "state_save" => handle_state_save(cmd, state).await,
         "state_load" => handle_state_load(cmd, state).await,
@@ -1149,6 +1158,9 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "device" => handle_device(cmd, state).await,
         "screencast_start" => handle_screencast_start(cmd, state).await,
         "screencast_stop" => handle_screencast_stop(state).await,
+        "stream_enable" => handle_stream_enable(cmd, state).await,
+        "stream_disable" => handle_stream_disable(state).await,
+        "stream_status" => handle_stream_status(state).await,
         "waitforurl" => handle_waitforurl(cmd, state).await,
         "waitforloadstate" => handle_waitforloadstate(cmd, state).await,
         "waitforfunction" => handle_waitforfunction(cmd, state).await,
@@ -1233,7 +1245,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         server.broadcast_result(&id, action, success, &data, duration_ms);
 
         if let Some(ref mgr) = state.browser {
-            server.broadcast_tabs(&mgr.tab_list());
+            server.broadcast_tabs(&mgr.tab_list()).await;
 
             // Keep the stream server's CDP session in sync with the active tab
             // so screencasting always targets the correct page.
@@ -1395,11 +1407,12 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Relaunch logic: check if we can reuse the existing connection
-    let needs_relaunch = if let Some(ref mgr) = state.browser {
+    // Relaunch logic: check if we can reuse the existing connection.
+    // Fast process-exit check first to avoid expensive CDP timeout.
+    let needs_relaunch = if let Some(ref mut mgr) = state.browser {
         let is_external = cdp_url.is_some() || cdp_port.is_some() || auto_connect;
         let was_external = mgr.is_cdp_connection();
-        is_external != was_external || !mgr.is_connection_alive().await
+        is_external != was_external || mgr.has_process_exited() || !mgr.is_connection_alive().await
     } else {
         true
     };
@@ -1408,6 +1421,7 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         if let Some(ref mut b) = state.browser {
             b.close().await?;
             state.browser = None;
+            state.screencasting = false;
             state.reset_input_state();
             state.update_stream_client().await;
         }
@@ -1923,6 +1937,7 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
         mgr.close().await?;
     }
     state.browser = None;
+    state.screencasting = false;
     state.reset_input_state();
     state.update_stream_client().await;
 
@@ -2923,8 +2938,15 @@ async fn handle_offline(cmd: &Value, state: &DaemonState) -> Result<Value, Strin
     Ok(json!({ "offline": offline }))
 }
 
-async fn handle_console(state: &DaemonState) -> Result<Value, String> {
-    Ok(state.event_tracker.get_console_json())
+async fn handle_console(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let clear = cmd.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
+    if clear {
+        state.event_tracker.clear_console();
+        Ok(json!({ "cleared": true }))
+    } else {
+        let result = state.event_tracker.get_console_json();
+        Ok(result)
+    }
 }
 
 async fn handle_errors(state: &DaemonState) -> Result<Value, String> {
@@ -3150,6 +3172,33 @@ async fn handle_mouse(cmd: &Value, state: &DaemonState) -> Result<Value, String>
 async fn handle_keyboard(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     let session_id = mgr.active_session_id()?.to_string();
+
+    match cmd.get("subaction").and_then(|v| v.as_str()) {
+        Some("type") => {
+            let text = cmd
+                .get("text")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'text' parameter")?;
+            interaction::type_text_into_active_context(&mgr.client, &session_id, text, None)
+                .await?;
+            return Ok(json!({ "typed": text }));
+        }
+        Some("insertText") => {
+            let text = cmd
+                .get("text")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'text' parameter")?;
+            mgr.client
+                .send_command(
+                    "Input.insertText",
+                    Some(json!({ "text": text })),
+                    Some(&session_id),
+                )
+                .await?;
+            return Ok(json!({ "inserted": true }));
+        }
+        _ => {}
+    }
 
     let event_type = cmd
         .get("eventType")
@@ -3527,6 +3576,25 @@ async fn handle_recording_start(cmd: &Value, state: &mut DaemonState) -> Result<
 
         let new_session_id = attach_result.session_id.clone();
         mgr.enable_domains_pub(&new_session_id).await?;
+
+        // Re-apply download behavior to the recording context.
+        // Without this, downloads in the recording context are silently dropped
+        // because Browser.setDownloadBehavior at launch only applies to the default context.
+        if let Some(ref dl_path) = mgr.download_path {
+            let _ = mgr
+                .client
+                .send_command(
+                    "Browser.setDownloadBehavior",
+                    Some(json!({
+                        "behavior": "allow",
+                        "downloadPath": dl_path,
+                        "browserContextId": context_id,
+                        "eventsEnabled": true
+                    })),
+                    None,
+                )
+                .await;
+        }
 
         // Transfer cookies to new context
         if let Some(ref cr) = cookies_result {
@@ -4256,6 +4324,114 @@ async fn handle_device(cmd: &Value, state: &DaemonState) -> Result<Value, String
 }
 
 // ---------------------------------------------------------------------------
+// Stream handlers
+// ---------------------------------------------------------------------------
+
+fn stream_file_path(session_id: &str) -> PathBuf {
+    get_socket_dir().join(format!("{}.stream", session_id))
+}
+
+fn write_stream_file(session_id: &str, port: u16) -> Result<(), String> {
+    let path = stream_file_path(session_id);
+    fs::write(&path, port.to_string()).map_err(|e| {
+        format!(
+            "Failed to write stream metadata '{}': {}",
+            path.display(),
+            e
+        )
+    })
+}
+
+fn remove_stream_file(session_id: &str) -> Result<(), String> {
+    let path = stream_file_path(session_id);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!(
+            "Failed to remove stream metadata '{}': {}",
+            path.display(),
+            err
+        )),
+    }
+}
+
+async fn current_stream_status(state: &DaemonState) -> Value {
+    debug_assert_eq!(
+        state.stream_server.is_some(),
+        state.stream_client.is_some(),
+        "stream server and stream client slot should be set together"
+    );
+
+    let connected = match state.browser.as_ref() {
+        Some(mgr) => mgr.is_connection_alive().await,
+        None => false,
+    };
+    let runtime_screencasting = match state.stream_server.as_ref() {
+        Some(server) => server.is_screencasting().await,
+        None => false,
+    };
+
+    json!({
+        "enabled": state.stream_server.is_some(),
+        "port": state
+            .stream_server
+            .as_ref()
+            .map(|server| Value::from(server.port()))
+            .unwrap_or(Value::Null),
+        "connected": connected,
+        "screencasting": connected && (state.screencasting || runtime_screencasting),
+    })
+}
+
+async fn handle_stream_enable(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    if state.stream_server.is_some() {
+        return Err("Streaming is already enabled for this session".to_string());
+    }
+
+    let requested_port = match cmd.get("port").and_then(|value| value.as_u64()) {
+        Some(raw) => u16::try_from(raw)
+            .map_err(|_| format!("Invalid stream port '{}': expected 0-65535", raw))?,
+        None => 0,
+    };
+
+    let (server, client_slot) =
+        StreamServer::start_without_client(requested_port, state.session_id.clone()).await?;
+    let port = server.port();
+    if let Err(err) = write_stream_file(&state.session_id, port) {
+        server.shutdown().await;
+        return Err(err);
+    }
+
+    state.stream_client = Some(client_slot);
+    state.stream_server = Some(Arc::new(server));
+    if state.screencasting {
+        if let Some(ref server) = state.stream_server {
+            server.set_screencasting(true).await;
+        }
+    }
+    state.update_stream_client().await;
+
+    Ok(current_stream_status(state).await)
+}
+
+async fn handle_stream_disable(state: &mut DaemonState) -> Result<Value, String> {
+    let Some(server) = state.stream_server.clone() else {
+        return Err("Streaming is not enabled for this session".to_string());
+    };
+
+    server.shutdown().await;
+    state.stream_server = None;
+    state.stream_client = None;
+    remove_stream_file(&state.session_id)?;
+
+    Ok(json!({ "disabled": true }))
+}
+
+async fn handle_stream_status(state: &DaemonState) -> Result<Value, String> {
+    Ok(current_stream_status(state).await)
+}
+
+// ---------------------------------------------------------------------------
 // Screencast handlers
 // ---------------------------------------------------------------------------
 
@@ -4296,6 +4472,7 @@ async fn handle_screencast_start(cmd: &Value, state: &mut DaemonState) -> Result
     state.screencasting = true;
 
     if let Some(ref server) = state.stream_server {
+        server.set_screencasting(true).await;
         server.broadcast_status(true, true, max_width as u32, max_height as u32);
     }
 
@@ -4314,6 +4491,7 @@ async fn handle_screencast_stop(state: &mut DaemonState) -> Result<Value, String
     state.screencasting = false;
 
     if let Some(ref server) = state.stream_server {
+        server.set_screencasting(false).await;
         let (vw, vh) = server.viewport().await;
         server.broadcast_status(true, false, vw, vh);
     }
@@ -6996,6 +7174,194 @@ mod tests {
     use crate::test_utils::EnvGuard;
     use std::fs;
 
+    fn unique_socket_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "agent-browser-{label}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_stream_enable_disable_and_status_without_browser() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_SESSION"]);
+        let socket_dir = unique_socket_dir("stream-runtime");
+        fs::create_dir_all(&socket_dir).expect("socket dir should be created");
+        guard.set(
+            "AGENT_BROWSER_SOCKET_DIR",
+            socket_dir.to_str().expect("socket dir should be utf-8"),
+        );
+        guard.set("AGENT_BROWSER_SESSION", "stream-runtime-session");
+
+        let mut state = DaemonState::new();
+
+        let disabled_status = handle_stream_status(&state)
+            .await
+            .expect("status should work before enable");
+        assert_eq!(disabled_status["enabled"], false);
+        assert_eq!(disabled_status["port"], Value::Null);
+        assert_eq!(disabled_status["connected"], false);
+        assert_eq!(disabled_status["screencasting"], false);
+
+        let enabled_status = handle_stream_enable(&json!({ "port": 0 }), &mut state)
+            .await
+            .expect("stream enable should succeed");
+        let port = enabled_status["port"]
+            .as_u64()
+            .expect("runtime stream should report a bound port");
+        assert!(port > 0, "runtime stream should bind a non-zero port");
+        assert_eq!(enabled_status["enabled"], true);
+        assert_eq!(enabled_status["connected"], false);
+        assert_eq!(enabled_status["screencasting"], false);
+
+        let stream_path = socket_dir.join("stream-runtime-session.stream");
+        let port_file =
+            fs::read_to_string(&stream_path).expect("stream metadata file should exist");
+        assert_eq!(port_file.trim(), port.to_string());
+
+        let duplicate_err = handle_stream_enable(&json!({}), &mut state)
+            .await
+            .expect_err("duplicate enable should fail");
+        assert!(duplicate_err.contains("already enabled"));
+
+        let status = handle_stream_status(&state)
+            .await
+            .expect("status should work after enable");
+        assert_eq!(status["enabled"], true);
+        assert_eq!(status["port"], port);
+
+        let disabled = handle_stream_disable(&mut state)
+            .await
+            .expect("stream disable should succeed");
+        assert_eq!(disabled["disabled"], true);
+        assert!(
+            !stream_path.exists(),
+            "disabling runtime stream should remove the metadata file"
+        );
+        assert!(state.stream_server.is_none());
+        assert!(state.stream_client.is_none());
+
+        let final_status = handle_stream_status(&state)
+            .await
+            .expect("status should work after disable");
+        assert_eq!(final_status["enabled"], false);
+        assert_eq!(final_status["port"], Value::Null);
+
+        let disable_err = handle_stream_disable(&mut state)
+            .await
+            .expect_err("duplicate disable should fail");
+        assert!(disable_err.contains("not enabled"));
+
+        let _ = fs::remove_dir_all(&socket_dir);
+    }
+
+    #[tokio::test]
+    async fn test_stream_disable_preserves_existing_screencast_state() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_SESSION"]);
+        let socket_dir = unique_socket_dir("stream-preserve-screencast");
+        fs::create_dir_all(&socket_dir).expect("socket dir should be created");
+        guard.set(
+            "AGENT_BROWSER_SOCKET_DIR",
+            socket_dir.to_str().expect("socket dir should be utf-8"),
+        );
+        guard.set(
+            "AGENT_BROWSER_SESSION",
+            "stream-preserve-screencast-session",
+        );
+
+        let mut state = DaemonState::new();
+        handle_stream_enable(&json!({ "port": 0 }), &mut state)
+            .await
+            .expect("stream enable should succeed");
+        state.screencasting = true;
+
+        let disabled = handle_stream_disable(&mut state)
+            .await
+            .expect("stream disable should succeed");
+        assert_eq!(disabled["disabled"], true);
+        assert!(
+            state.screencasting,
+            "stream disable should not clear an independently managed screencast state"
+        );
+
+        let _ = fs::remove_dir_all(&socket_dir);
+    }
+
+    #[tokio::test]
+    async fn test_stream_disable_clears_state_when_stream_file_removal_fails() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_SESSION"]);
+        let socket_dir = unique_socket_dir("stream-disable-cleanup");
+        fs::create_dir_all(&socket_dir).expect("socket dir should be created");
+        guard.set(
+            "AGENT_BROWSER_SOCKET_DIR",
+            socket_dir.to_str().expect("socket dir should be utf-8"),
+        );
+        guard.set("AGENT_BROWSER_SESSION", "stream-disable-cleanup-session");
+
+        let mut state = DaemonState::new();
+        handle_stream_enable(&json!({ "port": 0 }), &mut state)
+            .await
+            .expect("stream enable should succeed");
+
+        let stream_path = socket_dir.join("stream-disable-cleanup-session.stream");
+        fs::remove_file(&stream_path).expect("stream metadata file should exist");
+        fs::create_dir(&stream_path).expect("directory should force remove_stream_file failure");
+
+        let err = handle_stream_disable(&mut state)
+            .await
+            .expect_err("stream disable should surface file removal failure");
+        assert!(err.contains("Failed to remove stream metadata"));
+        assert!(
+            state.stream_server.is_none(),
+            "stream disable should clear stream_server even when metadata cleanup fails"
+        );
+        assert!(
+            state.stream_client.is_none(),
+            "stream disable should clear stream_client even when metadata cleanup fails"
+        );
+
+        let _ = fs::remove_dir_all(&socket_dir);
+    }
+
+    #[tokio::test]
+    async fn test_stream_enable_port_conflict_returns_error() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_SESSION"]);
+        let socket_dir = unique_socket_dir("stream-port-conflict");
+        fs::create_dir_all(&socket_dir).expect("socket dir should be created");
+        guard.set(
+            "AGENT_BROWSER_SOCKET_DIR",
+            socket_dir.to_str().expect("socket dir should be utf-8"),
+        );
+        guard.set("AGENT_BROWSER_SESSION", "stream-port-conflict-session");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("test should reserve an ephemeral port");
+        let port = listener
+            .local_addr()
+            .expect("listener should have local addr")
+            .port();
+
+        let mut state = DaemonState::new();
+        let err = handle_stream_enable(&json!({ "port": port }), &mut state)
+            .await
+            .expect_err("conflicting port should fail");
+        assert!(err.contains("Failed to bind stream server"));
+        assert!(state.stream_server.is_none());
+        assert!(state.stream_client.is_none());
+        assert!(
+            !socket_dir
+                .join("stream-port-conflict-session.stream")
+                .exists(),
+            "failed enable should not leave stale metadata behind"
+        );
+
+        drop(listener);
+        let _ = fs::remove_dir_all(&socket_dir);
+    }
+
     #[test]
     fn test_success_response_structure() {
         let resp = success_response("cmd-1", json!({"url": "https://example.com"}));
@@ -7015,6 +7381,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_daemon_state_new() {
+        let guard = EnvGuard::new(&[
+            "AGENT_BROWSER_ALLOWED_DOMAINS",
+            "AGENT_BROWSER_SESSION_NAME",
+            "AGENT_BROWSER_SESSION",
+        ]);
+        guard.remove("AGENT_BROWSER_ALLOWED_DOMAINS");
+        guard.remove("AGENT_BROWSER_SESSION_NAME");
+        guard.remove("AGENT_BROWSER_SESSION");
+
         let state = DaemonState::new();
         assert!(state.browser.is_none());
         assert!(state.domain_filter.read().await.is_none());
@@ -7431,6 +7806,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_credentials_roundtrip_via_actions() {
         let _lock = crate::native::auth::AUTH_TEST_MUTEX.lock().unwrap();
         let key_var = "AGENT_BROWSER_ENCRYPTION_KEY";
