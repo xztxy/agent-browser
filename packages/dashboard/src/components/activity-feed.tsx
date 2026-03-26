@@ -227,13 +227,16 @@ export function ActivityFeed({ events, persist, onTogglePersist, onClear }: Acti
           </div>
         ) : (
           events.map((event, i) => {
+            const key = event.type === "console"
+              ? `console-${event.timestamp}-${i}`
+              : `${event.type}-${event.id}`;
             switch (event.type) {
               case "command":
-                return <CommandEntry key={i} event={event} />;
+                return <CommandEntry key={key} event={event} />;
               case "result":
-                return <ResultEntry key={i} event={event} />;
+                return <ResultEntry key={key} event={event} />;
               case "console":
-                return <ConsoleEntry key={i} event={event} />;
+                return <ConsoleEntry key={key} event={event} />;
             }
           })
         )}

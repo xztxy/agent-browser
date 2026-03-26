@@ -82,7 +82,10 @@ export default function DashboardPage() {
   useEffect(() => {
     const polledNames = new Set(polledSessions.map((s) => s.session));
     if (pendingSessions.length > 0) {
-      setPendingSessions((prev) => prev.filter((p) => !polledNames.has(p.session)));
+      setPendingSessions((prev) => {
+        const next = prev.filter((p) => !polledNames.has(p.session));
+        return next.length === prev.length ? prev : next;
+      });
     }
     if (closingSessions.size > 0) {
       setClosingSessions((prev) => {

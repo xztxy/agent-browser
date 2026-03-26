@@ -241,6 +241,8 @@ impl StreamServer {
         let vh_bg = viewport_height.clone();
         let last_frame_bg = last_frame.clone();
         let last_tabs_bg = last_tabs.clone();
+        let last_engine_bg = last_engine.clone();
+        let recording_bg = recording.clone();
         let cdp_task = tokio::spawn(async move {
             cdp_event_loop(
                 frame_tx_bg,
@@ -253,6 +255,8 @@ impl StreamServer {
                 vh_bg,
                 last_frame_bg,
                 last_tabs_bg,
+                last_engine_bg,
+                recording_bg,
                 shutdown_rx,
             )
             .await;
@@ -727,6 +731,8 @@ async fn cdp_event_loop(
     viewport_height: Arc<Mutex<u32>>,
     last_frame: Arc<RwLock<Option<String>>>,
     last_tabs: Arc<RwLock<Vec<Value>>>,
+    last_engine: Arc<RwLock<String>>,
+    recording: Arc<Mutex<bool>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     loop {
@@ -788,12 +794,16 @@ async fn cdp_event_loop(
                 }
 
                 // Broadcast screencasting:true status with current viewport
+                let eng = last_engine.read().await.clone();
+                let rec = *recording.lock().await;
                 let status = json!({
                     "type": "status",
                     "connected": true,
                     "screencasting": true,
                     "viewportWidth": vw,
                     "viewportHeight": vh,
+                    "engine": eng,
+                    "recording": rec,
                 });
                 let _ = frame_tx.send(status.to_string());
 
@@ -1512,7 +1522,7 @@ async fn handle_dashboard_connection(
         let result = if path == "/api/exec" {
             exec_cli(&body_str).await
         } else if path == "/api/kill" {
-            kill_session(&body_str)
+            kill_session(&body_str).await
         } else {
             spawn_session(&body_str).await
         };
@@ -1638,7 +1648,7 @@ async fn exec_cli(body: &str) -> Result<String, String> {
 
 /// Kill a session daemon by sending SIGTERM, then SIGKILL if it survives.
 /// Cleans up socket/pid/stream/engine files afterward.
-fn kill_session(body: &str) -> Result<String, String> {
+async fn kill_session(body: &str) -> Result<String, String> {
     let parsed: Value = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
     let session = parsed
         .get("session")
@@ -1664,7 +1674,7 @@ fn kill_session(body: &str) -> Result<String, String> {
         unsafe {
             libc::kill(pid as i32, libc::SIGTERM);
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         if unsafe { libc::kill(pid as i32, 0) } == 0 {
             unsafe {
                 libc::kill(pid as i32, libc::SIGKILL);

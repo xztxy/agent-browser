@@ -128,7 +128,9 @@ export function NetworkPanel({ sessionName }: NetworkPanelProps) {
 
   useEffect(() => {
     if (!sessionName) return;
-    pollRef.current = setInterval(() => doFetch(false), 3000);
+    pollRef.current = setInterval(() => {
+      if (document.visibilityState === "visible") doFetch(false);
+    }, 5000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };

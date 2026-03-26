@@ -131,6 +131,7 @@ export function useStreamConnection(port: number = 9223) {
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryCountRef = useRef(0);
   const eventsRef = useRef<ActivityEvent[]>([]);
   const consoleRef = useRef<ConsoleEntry[]>([]);
 
@@ -164,12 +165,15 @@ export function useStreamConnection(port: number = 9223) {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      retryCountRef.current = 0;
       setState((prev) => ({ ...prev, connected: true }));
     };
 
     ws.onclose = () => {
       setState((prev) => ({ ...prev, connected: false }));
-      reconnectTimerRef.current = setTimeout(connect, 2000);
+      const delay = Math.min(2000 * 2 ** retryCountRef.current, 30000);
+      retryCountRef.current++;
+      reconnectTimerRef.current = setTimeout(connect, delay);
     };
 
     ws.onerror = () => {
