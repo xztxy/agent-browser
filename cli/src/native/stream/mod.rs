@@ -1,5 +1,5 @@
-mod chat;
 mod cdp_loop;
+mod chat;
 mod dashboard;
 mod discovery;
 mod http;

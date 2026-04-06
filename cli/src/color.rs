@@ -8,9 +8,9 @@ use std::env;
 use std::sync::OnceLock;
 
 fn env_is_truthy(name: &str) -> Option<bool> {
-    env::var(name).ok().map(|val| {
-        !matches!(val.to_lowercase().as_str(), "0" | "false" | "no")
-    })
+    env::var(name)
+        .ok()
+        .map(|val| !matches!(val.to_lowercase().as_str(), "0" | "false" | "no"))
 }
 
 /// Returns true if color output is enabled.

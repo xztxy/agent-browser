@@ -142,7 +142,12 @@ async fn read_post_body(stream: &mut tokio::net::TcpStream, initial: &[u8], n: u
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .map(|p| p + 4)
-        .or_else(|| initial[..n].windows(2).position(|w| w == b"\n\n").map(|p| p + 2));
+        .or_else(|| {
+            initial[..n]
+                .windows(2)
+                .position(|w| w == b"\n\n")
+                .map(|p| p + 2)
+        });
     let Some(header_end) = header_end else {
         return String::new();
     };
@@ -155,7 +160,9 @@ async fn read_post_body(stream: &mut tokio::net::TcpStream, initial: &[u8], n: u
                 l[16..].trim().parse().ok()
             } else {
                 let lower = l.to_lowercase();
-                lower.strip_prefix("content-length:").and_then(|v| v.trim().parse().ok())
+                lower
+                    .strip_prefix("content-length:")
+                    .and_then(|v| v.trim().parse().ok())
             }
         })
         .unwrap_or(0);

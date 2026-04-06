@@ -51,7 +51,10 @@ pub(super) async fn handle_models_request(stream: &mut tokio::net::TcpStream) {
         .await;
 
     let body = match result {
-        Ok(r) if r.status().is_success() => r.text().await.unwrap_or_else(|_| r#"{"data":[]}"#.to_string()),
+        Ok(r) if r.status().is_success() => r
+            .text()
+            .await
+            .unwrap_or_else(|_| r#"{"data":[]}"#.to_string()),
         _ => r#"{"data":[]}"#.to_string(),
     };
 
@@ -118,7 +121,6 @@ The following skill references describe agent-browser capabilities in detail. Us
         )
     })
 }
-
 
 const CHAT_TOOLS: &str = r#"[{"type":"function","function":{"name":"agent_browser","description":"Execute an agent-browser command. Runs against the active session by default. Add --session <name> to target or create a different session, and --engine <engine> to choose a browser engine.","parameters":{"type":"object","properties":{"command":{"type":"string","description":"The command to execute, e.g. 'agent-browser open https://google.com' or 'agent-browser --session new-session open https://example.com' or 'agent-browser snapshot -i' or 'agent-browser click @e3'"}},"required":["command"]}}}]"#;
 
@@ -263,7 +265,8 @@ fn compress_image_to_jpeg(raw_bytes: &[u8]) -> Option<Vec<u8>> {
         img
     };
     let mut buf = std::io::Cursor::new(Vec::new());
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, SCREENSHOT_JPEG_QUALITY);
+    let encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, SCREENSHOT_JPEG_QUALITY);
     img.write_with_encoder(encoder).ok()?;
     Some(buf.into_inner())
 }
@@ -324,23 +327,89 @@ fn enrich_tool_output(result: &str) -> String {
 }
 
 const ALLOWED_COMMANDS: &[&str] = &[
-    "open", "goto", "navigate", "back", "forward", "reload",
-    "click", "dblclick", "fill", "type", "hover", "focus",
-    "check", "uncheck", "select", "drag", "upload", "download",
-    "press", "key", "keydown", "keyup", "keyboard",
-    "scroll", "scrollintoview", "scrollinto",
-    "wait", "screenshot", "pdf", "snapshot", "eval",
-    "close", "quit", "exit", "inspect",
-    "auth", "confirm", "deny", "connect",
-    "cookies", "storage", "window", "frame", "dialog",
-    "trace", "profiler", "record", "har", "network",
-    "title", "url", "console", "errors",
-    "highlight", "state", "emulate", "video",
-    "tap", "swipe", "device", "batch", "diff",
-    "find", "role", "text", "label", "placeholder", "alt",
-    "testid", "first", "last", "nth",
-    "mouse", "touchscreen", "attribute", "property",
-    "set", "get", "is", "stream", "tab", "clipboard", "session",
+    "open",
+    "goto",
+    "navigate",
+    "back",
+    "forward",
+    "reload",
+    "click",
+    "dblclick",
+    "fill",
+    "type",
+    "hover",
+    "focus",
+    "check",
+    "uncheck",
+    "select",
+    "drag",
+    "upload",
+    "download",
+    "press",
+    "key",
+    "keydown",
+    "keyup",
+    "keyboard",
+    "scroll",
+    "scrollintoview",
+    "scrollinto",
+    "wait",
+    "screenshot",
+    "pdf",
+    "snapshot",
+    "eval",
+    "close",
+    "quit",
+    "exit",
+    "inspect",
+    "auth",
+    "confirm",
+    "deny",
+    "connect",
+    "cookies",
+    "storage",
+    "window",
+    "frame",
+    "dialog",
+    "trace",
+    "profiler",
+    "record",
+    "har",
+    "network",
+    "title",
+    "url",
+    "console",
+    "errors",
+    "highlight",
+    "state",
+    "emulate",
+    "video",
+    "tap",
+    "swipe",
+    "device",
+    "batch",
+    "diff",
+    "find",
+    "role",
+    "text",
+    "label",
+    "placeholder",
+    "alt",
+    "testid",
+    "first",
+    "last",
+    "nth",
+    "mouse",
+    "touchscreen",
+    "attribute",
+    "property",
+    "set",
+    "get",
+    "is",
+    "stream",
+    "tab",
+    "clipboard",
+    "session",
 ];
 
 const ALLOWED_GLOBAL_FLAGS: &[&str] = &["--session", "--engine"];
@@ -353,9 +422,7 @@ async fn execute_chat_tool(session: &str, command: &str) -> String {
 
     let single = command.split("&&").next().unwrap_or(command);
     let single = single.split(';').next().unwrap_or(single).trim();
-    let stripped = single
-        .strip_prefix("agent-browser ")
-        .unwrap_or(single);
+    let stripped = single.strip_prefix("agent-browser ").unwrap_or(single);
     let words = shell_words_split(stripped);
 
     let mut global_flags: Vec<String> = Vec::new();
@@ -382,7 +449,10 @@ async fn execute_chat_tool(session: &str, command: &str) -> String {
 
     let first_cmd = cmd_words.first().map(|s| s.as_str()).unwrap_or("");
     if !ALLOWED_COMMANDS.contains(&first_cmd) {
-        return format!("Blocked: '{}' is not a valid agent-browser command.", first_cmd);
+        return format!(
+            "Blocked: '{}' is not a valid agent-browser command.",
+            first_cmd
+        );
     }
 
     let mut args: Vec<String> = Vec::new();
@@ -498,12 +568,22 @@ async fn stream_gateway_response(
             if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
                 if !text.is_empty() {
                     if !text_started {
-                        let ev = format!("data: {}\n\n", json!({"type":"text-start","id":text_part_id}));
-                        if stream.write_all(ev.as_bytes()).await.is_err() { return tool_calls; }
+                        let ev = format!(
+                            "data: {}\n\n",
+                            json!({"type":"text-start","id":text_part_id})
+                        );
+                        if stream.write_all(ev.as_bytes()).await.is_err() {
+                            return tool_calls;
+                        }
                         text_started = true;
                     }
-                    let ev = format!("data: {}\n\n", json!({"type":"text-delta","id":text_part_id,"delta":text}));
-                    if stream.write_all(ev.as_bytes()).await.is_err() { return tool_calls; }
+                    let ev = format!(
+                        "data: {}\n\n",
+                        json!({"type":"text-delta","id":text_part_id,"delta":text})
+                    );
+                    if stream.write_all(ev.as_bytes()).await.is_err() {
+                        return tool_calls;
+                    }
                 }
             }
 
@@ -518,16 +598,35 @@ async fn stream_gateway_response(
                 for tc in tcs {
                     let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
                     if !tool_call_args.contains_key(&idx) {
-                        let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                        let name = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()).unwrap_or("").to_string();
-                        let ev = format!("data: {}\n\n", json!({"type":"tool-input-start","toolCallId":id,"toolName":name}));
+                        let id = tc
+                            .get("id")
+                            .and_then(|i| i.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = tc
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let ev = format!(
+                            "data: {}\n\n",
+                            json!({"type":"tool-input-start","toolCallId":id,"toolName":name})
+                        );
                         let _ = stream.write_all(ev.as_bytes()).await;
                         tool_call_args.insert(idx, (id, name, String::new()));
                     }
-                    if let Some(arg_delta) = tc.get("function").and_then(|f| f.get("arguments")).and_then(|a| a.as_str()) {
+                    if let Some(arg_delta) = tc
+                        .get("function")
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|a| a.as_str())
+                    {
                         let entry = tool_call_args.get_mut(&idx).unwrap();
                         entry.2.push_str(arg_delta);
-                        let ev = format!("data: {}\n\n", json!({"type":"tool-input-delta","toolCallId":entry.0,"inputTextDelta":arg_delta}));
+                        let ev = format!(
+                            "data: {}\n\n",
+                            json!({"type":"tool-input-delta","toolCallId":entry.0,"inputTextDelta":arg_delta})
+                        );
                         let _ = stream.write_all(ev.as_bytes()).await;
                     }
                 }
@@ -568,8 +667,8 @@ pub(super) async fn handle_chat_request(stream: &mut tokio::net::TcpStream, body
         }
     };
 
-    let default_model =
-        std::env::var("AI_GATEWAY_MODEL").unwrap_or_else(|_| "anthropic/claude-sonnet-4.6".to_string());
+    let default_model = std::env::var("AI_GATEWAY_MODEL")
+        .unwrap_or_else(|_| "anthropic/claude-sonnet-4.6".to_string());
 
     let parsed: Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -586,17 +685,28 @@ pub(super) async fn handle_chat_request(stream: &mut tokio::net::TcpStream, body
     };
 
     let messages = parsed.get("messages").cloned().unwrap_or(json!([]));
-    let model = parsed.get("model").and_then(|v| v.as_str()).unwrap_or(&default_model).to_string();
-    let session = parsed.get("session").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+    let model = parsed
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_model)
+        .to_string();
+    let session = parsed
+        .get("session")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default")
+        .to_string();
 
-    let mut openai_messages: Vec<Value> = vec![json!({"role": "system", "content": get_system_prompt()})];
+    let mut openai_messages: Vec<Value> =
+        vec![json!({"role": "system", "content": get_system_prompt()})];
     let mut frontend_boundaries: Vec<usize> = Vec::new();
     let frontend_arr = messages.as_array();
     let frontend_count = frontend_arr.map(|a| a.len()).unwrap_or(0);
     if let Some(arr) = frontend_arr {
         for msg in arr {
             frontend_boundaries.push(openai_messages.len());
-            let Some(role) = msg.get("role").and_then(|r| r.as_str()) else { continue };
+            let Some(role) = msg.get("role").and_then(|r| r.as_str()) else {
+                continue;
+            };
             if let Some(parts) = msg.get("parts").and_then(|p| p.as_array()) {
                 let mut content_parts: Vec<Value> = Vec::new();
                 for part in parts {
@@ -652,7 +762,9 @@ pub(super) async fn handle_chat_request(stream: &mut tokio::net::TcpStream, body
         let split = find_safe_split(&openai_messages, KEEP_RECENT_MESSAGES);
         let to_summarize = &openai_messages[1..split];
 
-        if let Some(summary) = summarize_for_compaction(&client, &url, &api_key, &model, to_summarize).await {
+        if let Some(summary) =
+            summarize_for_compaction(&client, &url, &api_key, &model, to_summarize).await
+        {
             let summary_msg = json!({
                 "role": "system",
                 "content": format!("[Conversation summary]\n{}", summary)
@@ -673,11 +785,18 @@ pub(super) async fn handle_chat_request(stream: &mut tokio::net::TcpStream, body
     let headers = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nx-vercel-ai-ui-message-stream: v1\r\n{CORS_HEADERS}\r\n"
     );
-    if stream.write_all(headers.as_bytes()).await.is_err() { return; }
+    if stream.write_all(headers.as_bytes()).await.is_err() {
+        return;
+    }
 
     let message_id = uuid::Uuid::new_v4().to_string();
-    let start_ev = format!("data: {}\n\n", json!({"type":"start","messageId":message_id}));
-    if stream.write_all(start_ev.as_bytes()).await.is_err() { return; }
+    let start_ev = format!(
+        "data: {}\n\n",
+        json!({"type":"start","messageId":message_id})
+    );
+    if stream.write_all(start_ev.as_bytes()).await.is_err() {
+        return;
+    }
 
     if let Some(ref summary) = compaction_summary {
         let ev = format!(
@@ -696,7 +815,9 @@ pub(super) async fn handle_chat_request(stream: &mut tokio::net::TcpStream, body
 
     for _step in 0..50 {
         let step_ev = "data: {\"type\":\"start-step\"}\n\n";
-        if stream.write_all(step_ev.as_bytes()).await.is_err() { return; }
+        if stream.write_all(step_ev.as_bytes()).await.is_err() {
+            return;
+        }
 
         let gateway_body = json!({
             "model": model,
@@ -715,7 +836,10 @@ pub(super) async fn handle_chat_request(stream: &mut tokio::net::TcpStream, body
         {
             Ok(r) => r,
             Err(e) => {
-                let ev = format!("data: {}\n\n", json!({"type":"error","errorText":format!("Gateway request failed: {}", e)}));
+                let ev = format!(
+                    "data: {}\n\n",
+                    json!({"type":"error","errorText":format!("Gateway request failed: {}", e)})
+                );
                 let _ = stream.write_all(ev.as_bytes()).await;
                 break;
             }
@@ -723,7 +847,10 @@ pub(super) async fn handle_chat_request(stream: &mut tokio::net::TcpStream, body
 
         if !gw_response.status().is_success() {
             let body_text = gw_response.text().await.unwrap_or_default();
-            let ev = format!("data: {}\n\n", json!({"type":"error","errorText":body_text}));
+            let ev = format!(
+                "data: {}\n\n",
+                json!({"type":"error","errorText":body_text})
+            );
             let _ = stream.write_all(ev.as_bytes()).await;
             break;
         }
@@ -745,22 +872,28 @@ pub(super) async fn handle_chat_request(stream: &mut tokio::net::TcpStream, body
             let input: Value = serde_json::from_str(tc_args).unwrap_or(json!({}));
             let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
 
-            let ev = format!("data: {}\n\n", json!({
-                "type": "tool-input-available",
-                "toolCallId": tc_id,
-                "toolName": tc_name,
-                "input": input
-            }));
+            let ev = format!(
+                "data: {}\n\n",
+                json!({
+                    "type": "tool-input-available",
+                    "toolCallId": tc_id,
+                    "toolName": tc_name,
+                    "input": input
+                })
+            );
             let _ = stream.write_all(ev.as_bytes()).await;
 
             let result = execute_chat_tool(&session, command).await;
 
             let frontend_output = enrich_tool_output(&result);
-            let ev = format!("data: {}\n\n", json!({
-                "type": "tool-output-available",
-                "toolCallId": tc_id,
-                "output": frontend_output
-            }));
+            let ev = format!(
+                "data: {}\n\n",
+                json!({
+                    "type": "tool-output-available",
+                    "toolCallId": tc_id,
+                    "output": frontend_output
+                })
+            );
             let _ = stream.write_all(ev.as_bytes()).await;
 
             openai_messages.push(json!({

@@ -5,9 +5,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
+use crate::connection::get_socket_dir;
 #[cfg(windows)]
 use crate::connection::resolve_port;
-use crate::connection::get_socket_dir;
 
 use super::chat::{chat_status_json, handle_chat_request, handle_models_request};
 use super::dashboard::spawn_session;
@@ -163,10 +163,7 @@ fn parse_content_length_bytes(headers: &[u8]) -> Option<usize> {
     None
 }
 
-async fn read_full_body(
-    stream: &mut tokio::net::TcpStream,
-    peeked: &[u8],
-) -> Option<String> {
+async fn read_full_body(stream: &mut tokio::net::TcpStream, peeked: &[u8]) -> Option<String> {
     let body_offset = find_header_end(peeked)?;
     let content_length = parse_content_length_bytes(&peeked[..body_offset])?;
     if content_length == 0 {
@@ -191,7 +188,10 @@ async fn read_full_body(
     String::from_utf8(body).ok()
 }
 
-pub(super) async fn relay_command_to_daemon(session_name: &str, body: &str) -> Result<String, String> {
+pub(super) async fn relay_command_to_daemon(
+    session_name: &str,
+    body: &str,
+) -> Result<String, String> {
     let mut cmd: Value = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
     if cmd.get("id").is_none() {
@@ -240,7 +240,10 @@ pub(super) async fn relay_command_to_daemon(session_name: &str, body: &str) -> R
     Ok(response_line.trim().to_string())
 }
 
-pub(super) fn serve_static_file(dir: &Path, url_path: &str) -> (&'static str, &'static str, Vec<u8>) {
+pub(super) fn serve_static_file(
+    dir: &Path,
+    url_path: &str,
+) -> (&'static str, &'static str, Vec<u8>) {
     let clean = url_path.trim_start_matches('/');
     let file_path = if clean.is_empty() {
         dir.join("index.html")
