@@ -108,7 +108,10 @@ RULES:
 - One tool call per command. Do not chain with `&&` or `;`.
 - Do not add `--session` or `--json`.
 - Do not run non-agent-browser programs.
-- Keep responses concise.
+- Keep responses concise. Minimize narration between tool calls. When you have a plan, execute it immediately.
+- For multi-step tasks, call tools back-to-back with minimal text. Do not repeat the plan before each step.
+- Use `batch` to run multiple commands in one call: `batch "open https://example.com" "screenshot" "snapshot -i"`. Each quoted argument is a separate command. Prefer batch for sequences of 2+ commands that don't depend on each other's output.
+- For screenshots, omit the path argument so they save to the default location (which will be displayed inline).
 
 The following skill references describe agent-browser capabilities in detail. Use them when deciding which commands to run and how to approach tasks.
 {sections}"#,
@@ -277,7 +280,7 @@ fn extract_image_path(text: &str) -> Option<String> {
                     .map(|i| i + 1)
                     .unwrap_or(0);
                 let path = &candidate[start..];
-                if path.contains('/') || path.contains('\\') {
+                if !path.is_empty() {
                     return Some(path.to_string());
                 }
             }

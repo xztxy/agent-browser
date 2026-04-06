@@ -2622,20 +2622,24 @@ Examples:
 
         "batch" => {
             r##"
-agent-browser batch - Execute multiple commands from stdin
+agent-browser batch - Execute multiple commands sequentially
 
-Usage: echo '<json>' | agent-browser batch [options]
+Usage: agent-browser batch [options] "<cmd1>" "<cmd2>" ...
+       echo '<json>' | agent-browser batch [options]
 
-Reads a JSON array of commands from stdin and executes them sequentially.
-Each command is an array of strings matching normal CLI arguments.
-Results are printed in order, separated by blank lines (or as a JSON array
-with --json).
+Runs multiple commands in sequence. Commands can be passed as quoted
+arguments or piped as JSON via stdin. Results are printed in order,
+separated by blank lines (or as a JSON array with --json).
 
 Options:
   --bail               Stop on first error (default: continue all commands)
   --json               Output results as a JSON array
 
-Input Format:
+Argument Mode:
+  Each quoted argument is a full command string:
+  agent-browser batch "open https://example.com" "snapshot -i" "screenshot"
+
+Stdin Mode (JSON):
   A JSON array of string arrays. Each inner array is one command:
   [
     ["open", "https://example.com"],
@@ -2646,8 +2650,9 @@ Input Format:
   ]
 
 Examples:
+  agent-browser batch "open https://example.com" "screenshot"
+  agent-browser batch --bail "open https://example.com" "click @e1" "screenshot"
   echo '[["open", "https://example.com"], ["snapshot"]]' | agent-browser batch
-  echo '[["open", "https://example.com"], ["get", "title"]]' | agent-browser batch --json
   agent-browser batch --bail < commands.json
 "##
         }
@@ -2769,8 +2774,8 @@ Streaming:
   stream status              Show streaming status and active port
 
 Batch:
-  batch [--bail]             Execute commands from stdin (JSON array of string arrays)
-                             --bail stops on first error (default: continue all)
+  batch [--bail] ["cmd" ...]  Execute multiple commands sequentially (args or stdin)
+                              --bail stops on first error (default: continue all)
 
 Auth Vault:
   auth save <name> [opts]    Save auth profile (--url, --username, --password/--password-stdin)

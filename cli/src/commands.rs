@@ -1409,7 +1409,12 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         // === Batch ===
         "batch" => {
             let bail = rest.contains(&"--bail");
-            Ok(json!({ "id": id, "action": "batch", "bail": bail }))
+            let commands: Vec<&str> = rest.iter().filter(|a| **a != "--bail").copied().collect();
+            let mut cmd = json!({ "id": id, "action": "batch", "bail": bail });
+            if !commands.is_empty() {
+                cmd["commands"] = json!(commands);
+            }
+            Ok(cmd)
         }
 
         _ => Err(ParseError::UnknownCommand {
@@ -4359,5 +4364,42 @@ mod tests {
         let cmd = parse_command(&args("batch --bail"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "batch");
         assert_eq!(cmd["bail"], true);
+    }
+
+    #[test]
+    fn test_batch_with_args() {
+        let cmd_args = vec![
+            "batch".to_string(),
+            "open https://example.com".to_string(),
+            "screenshot".to_string(),
+        ];
+        let cmd = parse_command(&cmd_args, &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "batch");
+        assert_eq!(cmd["bail"], false);
+        let commands = cmd["commands"].as_array().unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0], "open https://example.com");
+        assert_eq!(commands[1], "screenshot");
+    }
+
+    #[test]
+    fn test_batch_with_args_and_bail() {
+        let cmd_args = vec![
+            "batch".to_string(),
+            "--bail".to_string(),
+            "open https://example.com".to_string(),
+            "screenshot".to_string(),
+        ];
+        let cmd = parse_command(&cmd_args, &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "batch");
+        assert_eq!(cmd["bail"], true);
+        let commands = cmd["commands"].as_array().unwrap();
+        assert_eq!(commands.len(), 2);
+    }
+
+    #[test]
+    fn test_batch_no_args_no_commands_field() {
+        let cmd = parse_command(&args("batch"), &default_flags()).unwrap();
+        assert!(cmd.get("commands").is_none());
     }
 }

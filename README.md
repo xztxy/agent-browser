@@ -203,21 +203,24 @@ agent-browser wait "#spinner" --state hidden
 
 ### Batch Execution
 
-Execute multiple commands in a single invocation by piping a JSON array of
-string arrays to `batch`. This avoids per-command process startup overhead
-when running multi-step workflows.
+Execute multiple commands in a single invocation. Commands can be passed as
+quoted arguments or piped as JSON via stdin. This avoids per-command process
+startup overhead when running multi-step workflows.
 
 ```bash
-# Pipe commands as JSON
+# Argument mode: each quoted argument is a full command
+agent-browser batch "open https://example.com" "snapshot -i" "screenshot"
+
+# With --bail to stop on first error
+agent-browser batch --bail "open https://example.com" "click @e1" "screenshot"
+
+# Stdin mode: pipe commands as JSON
 echo '[
   ["open", "https://example.com"],
   ["snapshot", "-i"],
   ["click", "@e1"],
   ["screenshot", "result.png"]
 ]' | agent-browser batch --json
-
-# Stop on first error
-agent-browser batch --bail < commands.json
 ```
 
 ### Clipboard

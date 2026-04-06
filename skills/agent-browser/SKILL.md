@@ -218,9 +218,16 @@ Every session automatically starts a WebSocket stream server on an OS-assigned p
 
 ## Batch Execution
 
-Execute multiple commands in a single invocation by piping a JSON array of string arrays to `batch`. This avoids per-command process startup overhead when running multi-step workflows.
+Execute multiple commands in a single invocation. Commands can be passed as quoted arguments or piped as JSON via stdin. This avoids per-command process startup overhead when running multi-step workflows.
 
 ```bash
+# Argument mode: each quoted argument is a full command
+agent-browser batch "open https://example.com" "snapshot -i" "screenshot"
+
+# With --bail to stop on first error
+agent-browser batch --bail "open https://example.com" "click @e1" "screenshot"
+
+# Stdin mode: pipe a JSON array of string arrays
 echo '[
   ["open", "https://example.com"],
   ["snapshot", "-i"],
@@ -228,11 +235,11 @@ echo '[
   ["screenshot", "result.png"]
 ]' | agent-browser batch --json
 
-# Stop on first error
+# From a file
 agent-browser batch --bail < commands.json
 ```
 
-Use `batch` when you have a known sequence of commands that don't depend on intermediate output. Use separate commands or `&&` chaining when you need to parse output between steps (e.g., snapshot to discover refs, then interact).
+Use `batch` when you have a known sequence of commands that don't depend on intermediate output. Use separate commands when you need to parse output between steps (e.g., snapshot to discover refs, then interact).
 
 ## Common Patterns
 
