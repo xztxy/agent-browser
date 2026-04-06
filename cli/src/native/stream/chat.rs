@@ -110,7 +110,11 @@ RULES:
 - Do not run non-agent-browser programs.
 - Keep responses concise. Minimize narration between tool calls. When you have a plan, execute it immediately.
 - For multi-step tasks, call tools back-to-back with minimal text. Do not repeat the plan before each step.
-- Use `batch` to run multiple commands in one call: `batch "open https://example.com" "screenshot" "snapshot -i"`. Each quoted argument is a separate command. Prefer batch for sequences of 2+ commands that don't depend on each other's output.
+- ALWAYS use `batch` when you need to run 2+ commands in sequence. Batch runs them in order. Examples:
+  - `batch "open https://example.com" "snapshot -i"` (navigate and snapshot)
+  - `batch "open https://example.com" "screenshot"` (navigate and screenshot)
+  - `batch "click @e1" "wait 1000" "screenshot"` (click, wait, screenshot)
+  Only use a single command (not batch) when you need to read the output before deciding the next step (e.g., reading a snapshot to pick which element to click).
 - For screenshots, omit the path argument so they save to the default location (which will be displayed inline).
 
 The following skill references describe agent-browser capabilities in detail. Use them when deciding which commands to run and how to approach tasks.

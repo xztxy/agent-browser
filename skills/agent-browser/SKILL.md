@@ -117,6 +117,11 @@ See [references/authentication.md](references/authentication.md) for OAuth, 2FA,
 ## Essential Commands
 
 ```bash
+# Batch: ALWAYS use batch for 2+ sequential commands. Commands run in order.
+agent-browser batch "open https://example.com" "snapshot -i"
+agent-browser batch "open https://example.com" "screenshot"
+agent-browser batch "click @e1" "wait 1000" "screenshot"
+
 # Navigation
 agent-browser open <url>              # Navigate (aliases: goto, navigate)
 agent-browser close                   # Close browser
@@ -158,6 +163,14 @@ agent-browser wait "#spinner" --state hidden  # Wait for element to disappear
 agent-browser download @e1 ./file.pdf          # Click element to trigger download
 agent-browser wait --download ./output.zip     # Wait for any download to complete
 agent-browser --download-path ./downloads open <url>  # Set default download directory
+
+# Tab management
+agent-browser tab list                         # List all open tabs
+agent-browser tab new                          # Open a blank new tab
+agent-browser tab new https://example.com      # Open URL in a new tab
+agent-browser tab 2                            # Switch to tab by index (0-based)
+agent-browser tab close                        # Close the current tab
+agent-browser tab close 2                      # Close tab by index
 
 # Network
 agent-browser network requests                 # Inspect tracked requests
@@ -218,42 +231,40 @@ Every session automatically starts a WebSocket stream server on an OS-assigned p
 
 ## Batch Execution
 
-Execute multiple commands in a single invocation. Commands can be passed as quoted arguments or piped as JSON via stdin. This avoids per-command process startup overhead when running multi-step workflows.
+ALWAYS use `batch` when running 2+ commands in sequence. Batch executes commands in order, so dependent commands (like navigate then screenshot) work correctly. Each quoted argument is a separate command.
 
 ```bash
-# Argument mode: each quoted argument is a full command
+# Navigate and take a snapshot
+agent-browser batch "open https://example.com" "snapshot -i"
+
+# Navigate, snapshot, and screenshot in one call
 agent-browser batch "open https://example.com" "snapshot -i" "screenshot"
+
+# Click, wait, then screenshot
+agent-browser batch "click @e1" "wait 1000" "screenshot"
 
 # With --bail to stop on first error
 agent-browser batch --bail "open https://example.com" "click @e1" "screenshot"
-
-# Stdin mode: pipe a JSON array of string arrays
-echo '[
-  ["open", "https://example.com"],
-  ["snapshot", "-i"],
-  ["click", "@e1"],
-  ["screenshot", "result.png"]
-]' | agent-browser batch --json
-
-# From a file
-agent-browser batch --bail < commands.json
 ```
 
-Use `batch` when you have a known sequence of commands that don't depend on intermediate output. Use separate commands when you need to parse output between steps (e.g., snapshot to discover refs, then interact).
+Only use a single command (not batch) when you need to read the output before deciding the next command. For example, you must run `snapshot -i` as a single command when you need to read the refs to decide what to click. After reading the snapshot, batch the remaining steps.
+
+Stdin mode is also supported for programmatic use:
+
+```bash
+echo '[["open","https://example.com"],["screenshot"]]' | agent-browser batch --json
+agent-browser batch --bail < commands.json
+```
 
 ## Common Patterns
 
 ### Form Submission
 
 ```bash
-agent-browser open https://example.com/signup
-agent-browser snapshot -i
-agent-browser fill @e1 "Jane Doe"
-agent-browser fill @e2 "jane@example.com"
-agent-browser select @e3 "California"
-agent-browser check @e4
-agent-browser click @e5
-agent-browser wait --load networkidle
+# Navigate and get the form structure
+agent-browser batch "open https://example.com/signup" "snapshot -i"
+# Read the snapshot output to identify form refs, then fill and submit
+agent-browser batch "fill @e1 \"Jane Doe\"" "fill @e2 \"jane@example.com\"" "select @e3 \"California\"" "check @e4" "click @e5" "wait --load networkidle"
 ```
 
 ### Authentication with Auth Vault (Recommended)
@@ -278,17 +289,12 @@ agent-browser auth delete github
 
 ```bash
 # Login once and save state
-agent-browser open https://app.example.com/login
-agent-browser snapshot -i
-agent-browser fill @e1 "$USERNAME"
-agent-browser fill @e2 "$PASSWORD"
-agent-browser click @e3
-agent-browser wait --url "**/dashboard"
-agent-browser state save auth.json
+agent-browser batch "open https://app.example.com/login" "snapshot -i"
+# Read snapshot to find form refs, then fill and submit
+agent-browser batch "fill @e1 \"$USERNAME\"" "fill @e2 \"$PASSWORD\"" "click @e3" "wait --url **/dashboard" "state save auth.json"
 
 # Reuse in future sessions
-agent-browser state load auth.json
-agent-browser open https://app.example.com/dashboard
+agent-browser batch "state load auth.json" "open https://app.example.com/dashboard"
 ```
 
 ### Session Persistence
@@ -318,8 +324,7 @@ agent-browser state clean --older-than 7
 Iframe content is automatically inlined in snapshots. Refs inside iframes carry frame context, so you can interact with them directly.
 
 ```bash
-agent-browser open https://example.com/checkout
-agent-browser snapshot -i
+agent-browser batch "open https://example.com/checkout" "snapshot -i"
 # @e1 [heading] "Checkout"
 # @e2 [Iframe] "payment-frame"
 #   @e3 [input] "Card number"
@@ -327,23 +332,19 @@ agent-browser snapshot -i
 #   @e5 [button] "Pay"
 
 # Interact directly — no frame switch needed
-agent-browser fill @e3 "4111111111111111"
-agent-browser fill @e4 "12/28"
-agent-browser click @e5
+agent-browser batch "fill @e3 \"4111111111111111\"" "fill @e4 \"12/28\"" "click @e5"
 
 # To scope a snapshot to one iframe:
-agent-browser frame @e2
-agent-browser snapshot -i         # Only iframe content
+agent-browser batch "frame @e2" "snapshot -i"
 agent-browser frame main          # Return to main frame
 ```
 
 ### Data Extraction
 
 ```bash
-agent-browser open https://example.com/products
-agent-browser snapshot -i
+agent-browser batch "open https://example.com/products" "snapshot -i"
+# Read snapshot to find element refs, then extract
 agent-browser get text @e5           # Get specific element text
-agent-browser get text body > page.txt  # Get all page text
 
 # JSON output for parsing
 agent-browser snapshot -i --json
