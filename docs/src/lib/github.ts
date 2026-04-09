@@ -3,14 +3,8 @@ const REVALIDATE = 86400;
 
 export async function getStarCount(): Promise<string> {
   try {
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github.v3+json",
-    };
-    if (process.env.GITHUB_TOKEN) {
-      headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-    }
     const res = await fetch(`https://api.github.com/repos/${REPO}`, {
-      headers,
+      headers: { Accept: "application/vnd.github.v3+json" },
       next: { revalidate: REVALIDATE },
     });
     if (!res.ok) return "";
