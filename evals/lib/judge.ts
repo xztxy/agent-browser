@@ -3,9 +3,10 @@ import type {
   PatternResult,
   JudgeResult,
   EvalResult,
+  Provider,
+  ProviderOptions,
 } from "./types.ts";
-import { callClaude, callClaudeRaw } from "./claude.ts";
-import type { ClaudeOptions } from "./claude.ts";
+import { claudeProvider } from "./claude.ts";
 
 function testPatterns(
   response: string,
@@ -54,14 +55,15 @@ const JUDGE_MODEL = "anthropic/claude-opus-4.6";
 async function runLLMJudge(
   response: string,
   rubric: string,
-  options: ClaudeOptions,
+  options: ProviderOptions,
 ): Promise<JudgeResult> {
   const prompt = JUDGE_PROMPT_TEMPLATE.replace("{rubric}", rubric).replace(
     "{response}",
     response,
   );
 
-  const result = await callClaudeRaw(prompt, {
+  // Judge always uses Claude regardless of eval provider
+  const result = await claudeProvider.callRaw(prompt, {
     model: JUDGE_MODEL,
     timeout: options.timeout ?? 30_000,
   });
@@ -87,14 +89,19 @@ async function runLLMJudge(
 
 export async function evaluate(
   evalCase: EvalCase,
+  provider: Provider,
   options: { model?: string; judge?: boolean; timeout?: number } = {},
 ): Promise<EvalResult> {
-  const claudeOptions: ClaudeOptions = {
+  const providerOptions: ProviderOptions = {
     model: options.model,
     timeout: options.timeout,
   };
 
-  const response = await callClaude(evalCase.prompt, claudeOptions, evalCase.context);
+  const response = await provider.call(
+    evalCase.prompt,
+    providerOptions,
+    evalCase.context,
+  );
 
   if (response.error) {
     return {
@@ -113,7 +120,11 @@ export async function evaluate(
 
   let judge: JudgeResult | undefined;
   if (options.judge && evalCase.rubric) {
-    judge = await runLLMJudge(response.output, evalCase.rubric, claudeOptions);
+    judge = await runLLMJudge(
+      response.output,
+      evalCase.rubric,
+      providerOptions,
+    );
   }
 
   return {

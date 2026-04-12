@@ -1,4 +1,11 @@
-import type { EvalCase, EvalResult, Category, RunOptions } from "./lib/types.ts";
+import type {
+  EvalCase,
+  EvalResult,
+  Category,
+  ProviderName,
+  RunOptions,
+} from "./lib/types.ts";
+import { getProvider } from "./lib/providers.ts";
 import { evaluate } from "./lib/judge.ts";
 import {
   printResult,
@@ -19,7 +26,8 @@ const ALL_CASES: EvalCase[] = [
 
 function parseArgs(args: string[]): RunOptions {
   const options: RunOptions = {
-    model: "anthropic/claude-sonnet-4.6",
+    provider: "claude",
+    model: "",
     judge: false,
     json: false,
     concurrency: 1,
@@ -29,8 +37,11 @@ function parseArgs(args: string[]): RunOptions {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     switch (arg) {
+      case "--provider":
+        options.provider = (args[++i] ?? "claude") as ProviderName;
+        break;
       case "--model":
-        options.model = args[++i] ?? "anthropic/claude-sonnet-4.6";
+        options.model = args[++i] ?? "";
         break;
       case "--category":
         options.category = args[++i] as Category;
@@ -55,23 +66,32 @@ function parseArgs(args: string[]): RunOptions {
 }
 
 function printUsage(): void {
-  console.log(`
+  console.log(
+    `
 agent-browser skills evals
 
 Usage: bun run evals/run.ts [options]
 
 Options:
-  --model <name>       Model to use via AI Gateway (default: anthropic/claude-sonnet-4.6)
+  --provider <name>    Provider to use: claude, codex (default: claude)
+  --model <name>       Model override (default: provider's default model)
   --category <cat>     Filter by category: skill-loading, skill-selection, command-usage
   --judge              Enable LLM judge for quality scoring (costs extra API calls)
   --json               Output results as JSON
   --timeout <ms>       Timeout per eval case in milliseconds (default: 60000)
   --help, -h           Show this help
-`.trim());
+
+Providers:
+  claude               Uses Claude CLI via Vercel AI Gateway (default model: anthropic/claude-sonnet-4.6)
+  codex                Uses Codex CLI via Vercel AI Gateway (default model: openai/o3)
+`.trim(),
+  );
 }
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  const provider = getProvider(options.provider);
+  const model = options.model || provider.defaultModel;
 
   let cases = ALL_CASES;
   if (options.category) {
@@ -85,7 +105,7 @@ async function main(): Promise<void> {
 
   if (!options.json) {
     console.log(
-      `\nRunning ${cases.length} eval(s) with model=${options.model}` +
+      `\nRunning ${cases.length} eval(s) with provider=${provider.name} model=${model}` +
         (options.judge ? " + LLM judge" : ""),
     );
   }
@@ -100,8 +120,8 @@ async function main(): Promise<void> {
       printCategoryHeader(currentCategory);
     }
 
-    const result = await evaluate(evalCase, {
-      model: options.model,
+    const result = await evaluate(evalCase, provider, {
+      model,
       judge: options.judge,
       timeout: options.timeout,
     });

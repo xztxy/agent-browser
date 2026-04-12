@@ -5,10 +5,12 @@ Tests whether the thin SKILL.md + CLI-served skills approach works: do agents lo
 ## Prerequisites
 
 - [Bun](https://bun.sh) installed
-- `claude` CLI installed (`npm i -g @anthropic-ai/claude-code`)
 - `AI_GATEWAY_API_KEY` set (Vercel AI Gateway key)
+- One or both CLIs installed:
+  - `claude` CLI (`npm i -g @anthropic-ai/claude-code`) for the Claude provider
+  - `codex` CLI (`npm i -g @openai/codex`) for the Codex provider
 
-The evals route all Claude CLI calls through the Vercel AI Gateway (`https://ai-gateway.vercel.sh`). Set your key before running:
+The evals route all calls through the Vercel AI Gateway (`https://ai-gateway.vercel.sh`). Set your key before running:
 
 ```bash
 export AI_GATEWAY_API_KEY=gw_your_key_here
@@ -21,16 +23,20 @@ Or copy `.env.example` to `.env` and source it.
 ```bash
 cd evals
 
-# Run all evals
+# Run all evals (default: Claude provider)
 bun run run.ts
+
+# Use Codex provider
+bun run run.ts --provider codex
 
 # Filter by category
 bun run run.ts --category skill-loading
 bun run run.ts --category skill-selection
 bun run run.ts --category command-usage
 
-# Use a specific model
-bun run run.ts --model opus
+# Use a specific model (overrides provider default)
+bun run run.ts --model anthropic/claude-opus-4.6
+bun run run.ts --provider codex --model openai/gpt-4.1
 
 # Enable LLM judge for quality scoring (1-5)
 bun run run.ts --judge
@@ -39,16 +45,28 @@ bun run run.ts --judge
 bun run run.ts --json
 
 # Combine options
-bun run run.ts --category skill-selection --judge --model sonnet
+bun run run.ts --provider codex --category skill-selection --judge
 ```
 
 Or via package scripts:
 
 ```bash
-bun run eval           # run all
+bun run eval           # run all (Claude)
+bun run eval:claude    # run all (Claude, explicit)
+bun run eval:codex     # run all (Codex)
 bun run eval:judge     # run all with LLM judge
 bun run eval:json      # JSON output
 ```
+
+## Providers
+
+<table>
+<tr><th>Provider</th><th>CLI</th><th>Default Model</th><th>Notes</th></tr>
+<tr><td>claude</td><td><code>claude -p</code></td><td>anthropic/claude-sonnet-4.6</td><td>Uses ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL env vars</td></tr>
+<tr><td>codex</td><td><code>codex exec --json</code></td><td>openai/o3</td><td>Writes ~/.codex/config.toml with AI Gateway config</td></tr>
+</table>
+
+The LLM judge always uses Claude (anthropic/claude-opus-4.6), regardless of the eval provider.
 
 ## Eval Categories
 
@@ -68,7 +86,7 @@ Tests that the agent produces correct agent-browser commands for common workflow
 
 1. Each eval case provides a user task prompt
 2. The thin `skills/agent-browser/SKILL.md` is injected as context (simulating a skill installation)
-3. Claude CLI is called with `-p` (print mode) to get a single response
+3. The chosen provider CLI is called to get a single response
 4. Pattern matching checks for expected/forbidden command patterns (pass/fail)
 5. Optionally, a second Claude call judges response quality on a 1-5 scale
 
@@ -84,7 +102,7 @@ export const cases: EvalCase[] = [
     id: "xx-01",
     name: "Description of what this tests",
     category: "skill-loading",
-    prompt: "The user task to send to Claude",
+    prompt: "The user task to send to the model",
     expectedPatterns: ["regex.*that.*must.*match"],
     forbiddenPatterns: ["regex.*that.*must.*not.*match"],
     rubric: "1 - worst ... 5 - best",

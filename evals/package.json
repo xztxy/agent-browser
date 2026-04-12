@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "eval": "bun run run.ts",
+    "eval:claude": "bun run run.ts --provider claude",
+    "eval:codex": "bun run run.ts --provider codex",
     "eval:judge": "bun run run.ts --judge",
     "eval:json": "bun run run.ts --json"
   },

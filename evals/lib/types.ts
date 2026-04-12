@@ -1,10 +1,29 @@
 export type Category = "skill-loading" | "skill-selection" | "command-usage";
+export type ProviderName = "claude" | "codex";
+
+export interface ProviderOptions {
+  model?: string;
+  timeout?: number;
+}
+
+export interface ProviderResponse {
+  output: string;
+  durationMs: number;
+  error?: string;
+}
+
+export interface Provider {
+  name: ProviderName;
+  defaultModel: string;
+  call(prompt: string, options?: ProviderOptions, context?: string): Promise<ProviderResponse>;
+  callRaw(prompt: string, options?: ProviderOptions): Promise<ProviderResponse>;
+}
 
 export interface EvalCase {
   id: string;
   name: string;
   category: Category;
-  /** The user task prompt sent to Claude */
+  /** The user task prompt sent to the model */
   prompt: string;
   /** Additional context injected after the skill content (e.g., simulated skill output) */
   context?: string;
@@ -49,6 +68,7 @@ export interface EvalSummary {
 }
 
 export interface RunOptions {
+  provider: ProviderName;
   model: string;
   category?: Category;
   judge: boolean;
