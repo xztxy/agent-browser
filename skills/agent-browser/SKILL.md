@@ -12,28 +12,24 @@ Install: `npm i -g agent-browser && agent-browser install`
 
 ## Loading Skills
 
-Before using agent-browser, load the current instructions for your task:
+**You must run `agent-browser skills get <name>` before running any agent-browser commands.**
+This file does not contain command syntax, flags, or workflows. That content is served
+by the CLI and changes between versions. Guessing at commands without loading the skill
+will produce incorrect or outdated invocations.
 
 ```bash
-agent-browser skills list                  # See all available skills
-agent-browser skills get <name>            # Load a skill's instructions
-agent-browser skills get <name> --full     # Include references and templates
+agent-browser skills get agent-browser    # Required before any browser automation
+agent-browser skills get <name> --full    # Include references and templates
 ```
-
-Always use this command rather than relying on cached instructions. The output matches the installed CLI version and reflects the latest commands, flags, and workflows.
 
 ## Available Skills
 
-Load the right skill for your task:
-
-- **agent-browser** — Core browser automation (navigation, snapshots, forms, screenshots, auth, sessions, commands)
-- **dogfood** — Exploratory testing / QA / dogfooding. Finds bugs and produces a structured report with repro evidence.
-- **electron** — Automate Electron desktop apps (VS Code, Slack, Discord, Figma, Notion, Spotify)
-- **slack** — Browser-based Slack automation (check unreads, send messages, search, extract data)
-- **vercel-sandbox** — Run agent-browser + Chrome inside Vercel Sandbox microVMs
-- **agentcore** — Run agent-browser on AWS Bedrock AgentCore cloud browsers
-
-Example: `agent-browser skills get dogfood` or `agent-browser skills get electron --full`
+- **agent-browser** — Core browser automation
+- **dogfood** — Exploratory testing and QA
+- **electron** — Electron desktop app automation
+- **slack** — Slack workspace automation
+- **vercel-sandbox** — Browser automation in Vercel Sandbox
+- **agentcore** — Browser automation on AWS Bedrock AgentCore
 
 ## Why agent-browser
 
