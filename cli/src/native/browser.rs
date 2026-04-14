@@ -228,6 +228,12 @@ pub struct BrowserManager {
     visited_origins: HashSet<String>,
 }
 
+/// Timeout for `enable_domains` when probing tabs during startup.
+/// Discarded/frozen tabs (Memory Saver) have no renderer process and will
+/// never respond to Page.enable, so we use a short timeout to detect them
+/// quickly and move on to the next candidate.
+const ENABLE_DOMAINS_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 const LIGHTPANDA_CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const LIGHTPANDA_CDP_CONNECT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LIGHTPANDA_TARGET_INIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -429,67 +435,132 @@ impl BrowserManager {
             .collect();
 
         if page_targets.is_empty() {
-            // Create a new tab
-            let result: CreateTargetResult = self
-                .client
-                .send_command_typed(
-                    "Target.createTarget",
-                    &CreateTargetParams {
-                        url: "about:blank".to_string(),
-                    },
-                    None,
-                )
-                .await?;
+            return self.create_and_attach_blank_page().await;
+        }
 
-            let attach_result: AttachToTargetResult = self
+        // Prioritize targets that are not already attached. Targets marked
+        // attached may be orphaned sessions from a previous crashed daemon;
+        // re-attaching to those can produce zombie sessions where commands
+        // are silently dropped.
+        let mut not_attached: Vec<&TargetInfo> = Vec::new();
+        let mut already_attached: Vec<&TargetInfo> = Vec::new();
+        for t in &page_targets {
+            if t.attached.unwrap_or(false) {
+                already_attached.push(t);
+            } else {
+                not_attached.push(t);
+            }
+        }
+
+        // Probe candidates: try not-attached first, then already-attached as
+        // a fallback. We limit the number of probes to avoid spending 5s per
+        // discarded tab on browsers with hundreds of tabs.
+        const MAX_PROBES: usize = 5;
+        let mut active_index: Option<usize> = None;
+        let mut probes_remaining = MAX_PROBES;
+
+        let probe_order: Vec<&TargetInfo> = not_attached
+            .iter()
+            .chain(already_attached.iter())
+            .copied()
+            .collect();
+
+        for target in &probe_order {
+            let attach_result: AttachToTargetResult = match self
                 .client
                 .send_command_typed(
                     "Target.attachToTarget",
                     &AttachToTargetParams {
-                        target_id: result.target_id.clone(),
+                        target_id: target.target_id.clone(),
                         flatten: true,
                     },
                     None,
                 )
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
 
+            let page_index = self.pages.len();
             self.pages.push(PageInfo {
-                target_id: result.target_id,
+                target_id: target.target_id.clone(),
                 session_id: attach_result.session_id.clone(),
-                url: "about:blank".to_string(),
-                title: String::new(),
-                target_type: "page".to_string(),
+                url: target.url.clone(),
+                title: target.title.clone(),
+                target_type: target.target_type.clone(),
             });
-            self.active_page_index = 0;
-            self.enable_domains(&attach_result.session_id).await?;
-        } else {
-            for target in &page_targets {
-                let attach_result: AttachToTargetResult = self
-                    .client
-                    .send_command_typed(
-                        "Target.attachToTarget",
-                        &AttachToTargetParams {
-                            target_id: target.target_id.clone(),
-                            flatten: true,
-                        },
-                        None,
-                    )
-                    .await?;
 
-                self.pages.push(PageInfo {
-                    target_id: target.target_id.clone(),
-                    session_id: attach_result.session_id.clone(),
-                    url: target.url.clone(),
-                    title: target.title.clone(),
-                    target_type: target.target_type.clone(),
-                });
+            if active_index.is_some() {
+                continue;
             }
 
-            self.active_page_index = 0;
-            let session_id = self.pages[0].session_id.clone();
-            self.enable_domains(&session_id).await?;
+            if probes_remaining == 0 {
+                continue;
+            }
+            probes_remaining -= 1;
+
+            // Probe with a short timeout to detect discarded/frozen tabs.
+            let session_id = attach_result.session_id.clone();
+            match tokio::time::timeout(
+                ENABLE_DOMAINS_PROBE_TIMEOUT,
+                self.enable_domains(&session_id),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    active_index = Some(page_index);
+                }
+                Ok(Err(_)) | Err(_) => {
+                    // Tab is discarded/frozen or unresponsive. It stays in the
+                    // pages list but won't be the active tab.
+                }
+            }
         }
 
+        if let Some(idx) = active_index {
+            self.active_page_index = idx;
+        } else {
+            self.create_and_attach_blank_page().await?;
+        }
+
+        Ok(())
+    }
+
+    async fn create_and_attach_blank_page(&mut self) -> Result<(), String> {
+        let result: CreateTargetResult = self
+            .client
+            .send_command_typed(
+                "Target.createTarget",
+                &CreateTargetParams {
+                    url: "about:blank".to_string(),
+                },
+                None,
+            )
+            .await?;
+
+        let attach_result: AttachToTargetResult = self
+            .client
+            .send_command_typed(
+                "Target.attachToTarget",
+                &AttachToTargetParams {
+                    target_id: result.target_id.clone(),
+                    flatten: true,
+                },
+                None,
+            )
+            .await?;
+
+        let page_index = self.pages.len();
+        self.pages.push(PageInfo {
+            target_id: result.target_id,
+            session_id: attach_result.session_id.clone(),
+            url: "about:blank".to_string(),
+            title: String::new(),
+            target_type: "page".to_string(),
+        });
+        self.active_page_index = page_index;
+        self.enable_domains(&attach_result.session_id).await?;
         Ok(())
     }
 
@@ -926,7 +997,25 @@ impl BrowserManager {
 
         self.active_page_index = index;
         let session_id = self.pages[index].session_id.clone();
-        self.enable_domains(&session_id).await?;
+
+        // Use a timeout to detect discarded/frozen tabs that would otherwise
+        // hang for the full 30s CDP command timeout.
+        match tokio::time::timeout(
+            ENABLE_DOMAINS_PROBE_TIMEOUT,
+            self.enable_domains(&session_id),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(
+                    "Tab is not responding (it may be discarded or frozen by the browser's memory saver). \
+                     Try reloading it in the browser first, or use tab new to create a fresh tab."
+                        .to_string(),
+                );
+            }
+        }
 
         // Bring tab to front
         let _ = self
