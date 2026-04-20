@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ab suspense-log test</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      // React 19 dropped UMD builds, so we pull the ESM entry points from
+      // esm.sh. Both packages are served with CORS and cached at the CDN
+      // edge, so this loads quickly in a headless browser.
+      import React, { Suspense, use, createElement as h } from "https://esm.sh/react@19.2.5";
+      import { createRoot } from "https://esm.sh/react-dom@19.2.5/client";
+
+      function namedPromise(name, ms) {
+        const p = new Promise(function (res) {
+          setTimeout(function () {
+            res("done: " + name);
+          }, ms);
+        });
+        p.displayName = name;
+        return p;
+      }
+
+      // Keep promise identity stable across renders so React attaches the
+      // same suspender entry on every pass. Deliberately long so the
+      // initial commit catches the boundaries in their suspended state —
+      // React 19 concurrent mode will skip rendering the fallback if the
+      // promise resolves before the commit, which means no transition is
+      // observable on a fast "headless" run.
+      const PROMISES = {
+        fetchFoo: namedPromise("fetchFoo", 800),
+        fetchBar: namedPromise("fetchBar", 1600),
+      };
+
+      function Slow(props) {
+        const v = use(PROMISES[props.label]);
+        return h("span", null, v);
+      }
+
+      function App() {
+        return h(
+          "div",
+          null,
+          h(
+            Suspense,
+            { fallback: h("span", null, "loading A") },
+            h(Slow, { label: "fetchFoo" })
+          ),
+          h(
+            Suspense,
+            { fallback: h("span", null, "loading B") },
+            h(Slow, { label: "fetchBar" })
+          )
+        );
+      }
+
+      createRoot(document.getElementById("root")).render(h(App));
+      window.__AB_APP_READY__ = true;
+    </script>
+  </body>
+</html>
