@@ -1383,6 +1383,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "react_renders_start" => handle_react_renders_start(cmd, state).await,
         "react_renders_stop" => handle_react_renders_stop(cmd, state).await,
         "react_suspense" => handle_react_suspense(cmd, state).await,
+        "suspense_log" => handle_suspense_log(cmd, state).await,
         "vitals" => handle_vitals(cmd, state).await,
         "pushstate" => handle_pushstate(cmd, state).await,
         "clipboard" => handle_clipboard(cmd, state).await,
@@ -1655,7 +1656,17 @@ async fn apply_launch_init_scripts(state: &DaemonState) {
         {
             match feature {
                 "react-devtools" | "react" => {
-                    let _ = mgr.add_script_to_evaluate(react::INSTALL_HOOK_JS).await;
+                    // Single blob: installHook + shared decoder + always-on
+                    // Suspense log subscriber. Concatenating guarantees the
+                    // subscriber sees the hook it installed in the same CDP
+                    // round-trip, before any page script runs.
+                    let blob = format!(
+                        "{}\n(() => {{\n{}\n{}\n}})()",
+                        react::INSTALL_HOOK_JS,
+                        react::scripts::SUSPENSE_SHARED,
+                        react::scripts::SUSPENSE_LOG_INIT
+                    );
+                    let _ = mgr.add_script_to_evaluate(&blob).await;
                 }
                 other => {
                     eprintln!("warning: unknown --enable feature '{}'", other);
@@ -4820,7 +4831,16 @@ async fn handle_react_renders_stop(cmd: &Value, state: &DaemonState) -> Result<V
 
 async fn handle_react_suspense(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let result = mgr.evaluate(react::scripts::SUSPENSE_WALK, None).await?;
+    // The walker uses the shared `decodeSuspenseOps` / `parseInspection`
+    // helpers, so wrap both in a single async IIFE. We `await` the
+    // inner walker's promise here so Chrome's `awaitPromise:true`
+    // resolves all the way to the JSON string value.
+    let script = format!(
+        "(async () => {{\n{}\nreturn await {};\n}})()",
+        react::scripts::SUSPENSE_SHARED,
+        react::scripts::SUSPENSE_WALK
+    );
+    let result = mgr.evaluate(&script, None).await?;
     let boundaries_json = parse_json_string(result, "react suspense")?;
     let boundaries: Vec<react::Boundary> = serde_json::from_value(boundaries_json.clone())
         .map_err(|e| format!("Failed to parse suspense boundaries: {}", e))?;
@@ -4849,6 +4869,37 @@ async fn handle_react_suspense(cmd: &Value, state: &DaemonState) -> Result<Value
         }
     } else {
         Ok(json!({ "report": react::format_suspense_report(&boundaries, only_dynamic) }))
+    }
+}
+
+async fn handle_suspense_log(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
+    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
+    let clear = cmd.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
+    let return_json = cmd.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
+    let source_maps = cmd
+        .get("sourceMaps")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let script = format!(
+        "(function() {{ var fn = window.__AB_SUSPENSE_LOG_READ__; if (typeof fn !== 'function') throw new Error('Suspense log not installed - relaunch with --enable react-devtools'); return fn({}); }})()",
+        if clear { "true" } else { "false" }
+    );
+    let result = mgr.evaluate(&script, None).await?;
+    let raw = parse_json_string(result, "react suspense-log")?;
+    let mut data: react::SuspenseLog = serde_json::from_value(raw)
+        .map_err(|e| format!("Failed to parse suspense log: {}", e))?;
+
+    if source_maps {
+        react::sourcemap::resolve(&mut data, mgr).await;
+    }
+
+    if return_json {
+        let value = serde_json::to_value(&data)
+            .map_err(|e| format!("Failed to serialize suspense log: {}", e))?;
+        Ok(value)
+    } else {
+        Ok(json!({ "report": react::format_suspense_log(&data) }))
     }
 }
 

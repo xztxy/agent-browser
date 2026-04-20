@@ -12,6 +12,8 @@
 //! passes `--enable react-devtools` at launch.
 
 pub mod scripts;
+pub mod sourcemap;
+pub mod suspense_log;
 
 mod renders;
 mod suspense;
@@ -20,6 +22,7 @@ mod vitals;
 
 pub use renders::{format_renders_report, RendersData};
 pub use suspense::{format_suspense_report, Boundary};
+pub use suspense_log::{format_suspense_log, SuspenseLog};
 pub use tree::{format_tree, TreeNode};
 pub use vitals::{format_vitals_report, VitalsData};
 

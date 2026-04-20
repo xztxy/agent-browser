@@ -426,7 +426,161 @@ pub const RENDERS_STOP: &str = r#"
 })()
 "#;
 
+/// Shared helpers for Suspense introspection — `decodeSuspenseOps` + `parseInspection`.
+///
+/// Prefixed to both `SUSPENSE_WALK` (one-shot flush) and `SUSPENSE_LOG_INIT`
+/// (always-on subscriber) so there's a single source of truth for the DevTools
+/// operations opcode decoder. Wrapped in an IIFE that attaches its exports to
+/// the enclosing scope via `var` so the two consumers can call the same fns
+/// even though they run inside their own async IIFEs.
+pub const SUSPENSE_SHARED: &str = r#"
+function decodeSuspenseOps(ops, map) {
+  let i = 2;
+  const strings = [null];
+  const tableEnd = ++i + ops[i - 1];
+  while (i < tableEnd) {
+    const len = ops[i++];
+    strings.push(String.fromCodePoint(...ops.slice(i, i + len)));
+    i += len;
+  }
+  while (i < ops.length) {
+    const op = ops[i];
+    if (op === 1) {
+      const type = ops[i + 2];
+      i += 3 + (type === 11 ? 4 : 5);
+    } else if (op === 2) {
+      i += 2 + ops[i + 1];
+    } else if (op === 3) {
+      i += 3 + ops[i + 2];
+    } else if (op === 4) {
+      i += 3;
+    } else if (op === 5) {
+      i += 4;
+    } else if (op === 6) {
+      i++;
+    } else if (op === 7) {
+      i += 3;
+    } else if (op === 8) {
+      const id = ops[i + 1];
+      const parentID = ops[i + 2];
+      const nameStrID = ops[i + 3];
+      const isSuspended = ops[i + 4] === 1;
+      const numRects = ops[i + 5];
+      i += 6;
+      if (numRects !== -1) i += numRects * 4;
+      map.set(id, { id, parentID, name: strings[nameStrID] || null, isSuspended, environments: [] });
+    } else if (op === 9) {
+      i += 2 + ops[i + 1];
+    } else if (op === 10) {
+      i += 3 + ops[i + 2];
+    } else if (op === 11) {
+      const numRects = ops[i + 2];
+      i += 3;
+      if (numRects !== -1) i += numRects * 4;
+    } else if (op === 12) {
+      i++;
+      const changeLen = ops[i++];
+      for (let c = 0; c < changeLen; c++) {
+        const id = ops[i++];
+        i++;
+        i++;
+        const isSuspended = ops[i++] === 1;
+        const envLen = ops[i++];
+        const envs = [];
+        for (let e = 0; e < envLen; e++) {
+          const n = strings[ops[i++]];
+          if (n != null) envs.push(n);
+        }
+        const node = map.get(id);
+        if (node) {
+          node.isSuspended = isSuspended;
+          for (const env of envs) {
+            if (!node.environments.includes(env)) node.environments.push(env);
+          }
+        }
+      }
+    } else if (op === 13) {
+      i += 2;
+    } else {
+      i++;
+    }
+  }
+}
+
+function parseInspection(boundary, data) {
+  const rawSuspendedBy = data.suspendedBy;
+  const rawSuspenders = Array.isArray(rawSuspendedBy)
+    ? rawSuspendedBy
+    : rawSuspendedBy && Array.isArray(rawSuspendedBy.data) ? rawSuspendedBy.data : null;
+  if (rawSuspenders) {
+    for (const entry of rawSuspenders) {
+      const awaited = entry && entry.awaited;
+      if (!awaited) continue;
+      const desc = preview(awaited.description) || preview(awaited.value);
+      boundary.suspendedBy.push({
+        name: awaited.name || "unknown",
+        description: desc,
+        duration: awaited.end && awaited.start ? Math.round(awaited.end - awaited.start) : 0,
+        env: awaited.env || (entry && entry.env) || null,
+        ownerName: (awaited.owner && awaited.owner.displayName) || null,
+        ownerStack: parseStack((awaited.owner && awaited.owner.stack) || awaited.stack),
+        awaiterName: (entry && entry.owner && entry.owner.displayName) || null,
+        awaiterStack: parseStack((entry && entry.owner && entry.owner.stack) || (entry && entry.stack)),
+      });
+    }
+  }
+  if (data.unknownSuspenders && data.unknownSuspenders !== 0) {
+    const reasons = {
+      1: "production build (no debug info)",
+      2: "old React version (missing tracking)",
+      3: "thrown Promise (library using throw instead of use())",
+    };
+    boundary.unknownSuspenders = reasons[data.unknownSuspenders] || "unknown reason";
+  }
+  if (Array.isArray(data.owners)) {
+    for (const o of data.owners) {
+      if (o && o.displayName) {
+        const src = Array.isArray(o.stack) && o.stack.length > 0 && Array.isArray(o.stack[0])
+          ? [o.stack[0][1] || "(unknown)", o.stack[0][2], o.stack[0][3]]
+          : null;
+        boundary.owners.push({ name: o.displayName, env: o.env || null, source: src });
+      }
+    }
+  }
+  if (Array.isArray(data.stack) && data.stack.length > 0) {
+    const frame = data.stack[0];
+    if (Array.isArray(frame) && frame.length >= 4) {
+      boundary.jsxSource = [frame[1] || "(unknown)", frame[2], frame[3]];
+    }
+  }
+}
+
+function parseStack(raw) {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  return raw
+    .filter((f) => Array.isArray(f) && f.length >= 4)
+    .map((f) => [f[0] || "", f[1] || "", f[2] || 0, f[3] || 0]);
+}
+
+function preview(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (typeof v !== "object") return String(v);
+  if (typeof v.preview_long === "string") return v.preview_long;
+  if (typeof v.preview_short === "string") return v.preview_short;
+  if (typeof v.value === "string") return v.value;
+  try {
+    const s = JSON.stringify(v);
+    return s.length > 80 ? s.slice(0, 77) + "..." : s;
+  } catch {
+    return "";
+  }
+}
+"#;
+
 /// Suspense boundary walker. Returns boundaries with suspendedBy metadata as JSON.
+///
+/// Concatenate with `SUSPENSE_SHARED` (prepended) to get the full script.
 pub const SUSPENSE_WALK: &str = r#"
 (async () => {
   const hook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
@@ -476,149 +630,320 @@ pub const SUSPENSE_WALK: &str = r#"
     results.push(boundary);
   }
   return JSON.stringify(results);
+})()
+"#;
 
-  function decodeSuspenseOps(ops, map) {
-    let i = 2;
-    const strings = [null];
-    const tableEnd = ++i + ops[i - 1];
-    while (i < tableEnd) {
-      const len = ops[i++];
-      strings.push(String.fromCodePoint(...ops.slice(i, i + len)));
-      i += len;
+/// Always-on Suspense transition recorder init script.
+///
+/// Approach: wrap `hook.onCommitFiberRoot` and, on every React commit, walk
+/// the fiber tree to find Suspense boundaries (tag === 13). A boundary's
+/// `memoizedState !== null` means it's currently suspended (showing fallback).
+/// We diff against the previous commit's state per-fiber to detect
+/// `suspended → resolved` and vice versa, and log each edge to
+/// `window.__AB_SUSPENSE_LOG__`.
+///
+/// On the suspend edge, we call the renderer interface's `inspectElement` for
+/// the boundary's React DevTools id (derived via `getFiberIDForNative` when
+/// the boundary has mounted DOM children) and parse the `suspendedBy` /
+/// `owners` data synchronously before React clears it on resolve.
+///
+/// Why fiber-walk instead of subscribe to `operations`? Under the plan's
+/// original design we subscribed to `hook.emit("operations", ...)`. That path
+/// works only when the React DevTools backend has an active bridge — the
+/// vanilla hook the CLI installs has no bridge, so in React 19 runtime
+/// commits never emit `operations` for the resolve edge. Walking fibers is
+/// the one source of truth that does not depend on bridge state.
+///
+/// Concatenate with `SUSPENSE_SHARED` (prepended) before registering via
+/// `addScriptToEvaluateOnNewDocument`, and with `INSTALL_HOOK_JS` before that
+/// so the hook exists by the time this IIFE runs.
+pub const SUSPENSE_LOG_INIT: &str = r#"
+(() => {
+  const hook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+  if (!hook || window.__AB_SUSPENSE_LOG_INSTALLED__) return;
+  window.__AB_SUSPENSE_LOG_INSTALLED__ = true;
+
+  const CAP = 2000;
+  const log = {
+    events: [],
+    overflowed: false,
+    startedAt: performance.now(),
+    bufferCapacity: CAP,
+  };
+  // fiber -> { suspended: bool, startT: number | null, syntheticID: number }
+  const fiberState = new WeakMap();
+  let nextSyntheticID = 1;
+  window.__AB_SUSPENSE_LOG__ = log;
+
+  function getRi(rendererID) {
+    return (
+      hook.rendererInterfaces &&
+      hook.rendererInterfaces.get &&
+      hook.rendererInterfaces.get(rendererID || 1)
+    );
+  }
+
+  function fiberDisplayName(fiber) {
+    const t = fiber.type;
+    if (!t) return null;
+    if (typeof t === "string") return t;
+    return t.displayName || t.name || null;
+  }
+
+  function findBoundaryDisplayName(fiber) {
+    // Walk up the fiber chain to find a named user component — the
+    // Suspense fiber itself is anonymous, but its immediate wrapper
+    // usually isn't.
+    let f = fiber.return;
+    while (f) {
+      const n = fiberDisplayName(f);
+      if (n && n !== "Suspense" && n !== "SuspenseComponent") return n;
+      f = f.return;
     }
-    while (i < ops.length) {
-      const op = ops[i];
-      if (op === 1) {
-        const type = ops[i + 2];
-        i += 3 + (type === 11 ? 4 : 5);
-      } else if (op === 2) {
-        i += 2 + ops[i + 1];
-      } else if (op === 3) {
-        i += 3 + ops[i + 2];
-      } else if (op === 4) {
-        i += 3;
-      } else if (op === 5) {
-        i += 4;
-      } else if (op === 6) {
-        i++;
-      } else if (op === 7) {
-        i += 3;
-      } else if (op === 8) {
-        const id = ops[i + 1];
-        const parentID = ops[i + 2];
-        const nameStrID = ops[i + 3];
-        const isSuspended = ops[i + 4] === 1;
-        const numRects = ops[i + 5];
-        i += 6;
-        if (numRects !== -1) i += numRects * 4;
-        map.set(id, { id, parentID, name: strings[nameStrID] || null, isSuspended, environments: [] });
-      } else if (op === 9) {
-        i += 2 + ops[i + 1];
-      } else if (op === 10) {
-        i += 3 + ops[i + 2];
-      } else if (op === 11) {
-        const numRects = ops[i + 2];
-        i += 3;
-        if (numRects !== -1) i += numRects * 4;
-      } else if (op === 12) {
-        i++;
-        const changeLen = ops[i++];
-        for (let c = 0; c < changeLen; c++) {
-          const id = ops[i++];
-          i++;
-          i++;
-          const isSuspended = ops[i++] === 1;
-          const envLen = ops[i++];
-          const envs = [];
-          for (let e = 0; e < envLen; e++) {
-            const n = strings[ops[i++]];
-            if (n != null) envs.push(n);
+    return "Suspense";
+  }
+
+  function findFiberElementID(fiber, rendererID) {
+    const ri = getRi(rendererID);
+    if (!ri) return null;
+    // Walk child fibers to find the nearest host (DOM node) and ask the
+    // renderer interface for the enclosing Suspense boundary's id. This
+    // is the ID that `hasElementWithId` / `inspectElement` expect.
+    // `getSuspenseNodeIDForHostInstance` is preferred (returns the
+    // boundary ID directly); `getElementIDForHostInstance` returns the
+    // host fiber's ID which is wrong (we want the Suspense node).
+    let f = fiber.child;
+    let depth = 0;
+    while (f && depth < 50) {
+      if (f.stateNode && f.stateNode.nodeType) {
+        try {
+          if (typeof ri.getSuspenseNodeIDForHostInstance === "function") {
+            const id = ri.getSuspenseNodeIDForHostInstance(f.stateNode);
+            if (id) return id;
           }
-          const node = map.get(id);
-          if (node) {
-            node.isSuspended = isSuspended;
-            for (const env of envs) {
-              if (!node.environments.includes(env)) node.environments.push(env);
-            }
+        } catch {}
+        try {
+          if (typeof ri.getElementIDForHostInstance === "function") {
+            const id = ri.getElementIDForHostInstance(f.stateNode);
+            if (id) return id;
           }
-        }
-      } else if (op === 13) {
-        i += 2;
+        } catch {}
+      }
+      if (f.child) {
+        f = f.child;
+      } else if (f.sibling) {
+        f = f.sibling;
       } else {
-        i++;
-      }
-    }
-  }
-
-  function parseInspection(boundary, data) {
-    const rawSuspendedBy = data.suspendedBy;
-    const rawSuspenders = Array.isArray(rawSuspendedBy)
-      ? rawSuspendedBy
-      : rawSuspendedBy && Array.isArray(rawSuspendedBy.data) ? rawSuspendedBy.data : null;
-    if (rawSuspenders) {
-      for (const entry of rawSuspenders) {
-        const awaited = entry && entry.awaited;
-        if (!awaited) continue;
-        const desc = preview(awaited.description) || preview(awaited.value);
-        boundary.suspendedBy.push({
-          name: awaited.name || "unknown",
-          description: desc,
-          duration: awaited.end && awaited.start ? Math.round(awaited.end - awaited.start) : 0,
-          env: awaited.env || (entry && entry.env) || null,
-          ownerName: (awaited.owner && awaited.owner.displayName) || null,
-          ownerStack: parseStack((awaited.owner && awaited.owner.stack) || awaited.stack),
-          awaiterName: (entry && entry.owner && entry.owner.displayName) || null,
-          awaiterStack: parseStack((entry && entry.owner && entry.owner.stack) || (entry && entry.stack)),
-        });
-      }
-    }
-    if (data.unknownSuspenders && data.unknownSuspenders !== 0) {
-      const reasons = {
-        1: "production build (no debug info)",
-        2: "old React version (missing tracking)",
-        3: "thrown Promise (library using throw instead of use())",
-      };
-      boundary.unknownSuspenders = reasons[data.unknownSuspenders] || "unknown reason";
-    }
-    if (Array.isArray(data.owners)) {
-      for (const o of data.owners) {
-        if (o && o.displayName) {
-          const src = Array.isArray(o.stack) && o.stack.length > 0 && Array.isArray(o.stack[0])
-            ? [o.stack[0][1] || "(unknown)", o.stack[0][2], o.stack[0][3]]
-            : null;
-          boundary.owners.push({ name: o.displayName, env: o.env || null, source: src });
+        let p = f.return;
+        f = null;
+        while (p && p !== fiber) {
+          if (p.sibling) {
+            f = p.sibling;
+            break;
+          }
+          p = p.return;
         }
       }
+      depth++;
     }
-    if (Array.isArray(data.stack) && data.stack.length > 0) {
-      const frame = data.stack[0];
-      if (Array.isArray(frame) && frame.length >= 4) {
-        boundary.jsxSource = [frame[1] || "(unknown)", frame[2], frame[3]];
+    return null;
+  }
+
+  function inspectBoundary(fiber, rendererID) {
+    const id = findFiberElementID(fiber, rendererID);
+    if (!id) return { elementID: null, data: null };
+    const ri = getRi(rendererID);
+    if (!ri || !ri.hasElementWithId || !ri.hasElementWithId(id)) {
+      return { elementID: id, data: null };
+    }
+    let result;
+    try {
+      result = ri.inspectElement(1, id, null, true);
+    } catch {
+      return { elementID: id, data: null };
+    }
+    if (!result || result.type !== "full-data") {
+      return { elementID: id, data: null };
+    }
+    const stub = {
+      suspendedBy: [],
+      unknownSuspenders: null,
+      owners: [],
+      jsxSource: null,
+    };
+    try {
+      parseInspection(stub, result.value);
+    } catch {
+      return { elementID: id, data: null };
+    }
+    return { elementID: id, data: stub };
+  }
+
+  function appendEvent(ev) {
+    if (log.events.length >= CAP) {
+      log.events.shift();
+      log.overflowed = true;
+    }
+    log.events.push(ev);
+  }
+
+  function walkFiberForSuspense(fiber, rendererID, out) {
+    if (!fiber) return;
+    // tag 13: Suspense. tag 18: DehydratedSuspenseComponent (SSR).
+    if (fiber.tag === 13 || fiber.tag === 18) {
+      out.push(fiber);
+    }
+    walkFiberForSuspense(fiber.child, rendererID, out);
+    walkFiberForSuspense(fiber.sibling, rendererID, out);
+  }
+
+  function commit(rendererID, root) {
+    const boundaries = [];
+    try {
+      walkFiberForSuspense(root.current, rendererID, boundaries);
+    } catch {
+      return;
+    }
+    const t = performance.now();
+    for (const fiber of boundaries) {
+      const isSuspended = fiber.memoizedState !== null;
+      // State is keyed by fiber identity, but React swaps between
+      // `current` and `alternate` fibers across commits. Check both so
+      // we don't create a fresh state on every swap — that would emit a
+      // spurious "suspended" edge on each commit.
+      let state = fiberState.get(fiber);
+      if (!state && fiber.alternate) {
+        state = fiberState.get(fiber.alternate);
+      }
+      if (!state) {
+        state = {
+          suspended: false,
+          startT: null,
+          syntheticID: nextSyntheticID++,
+          elementID: null,
+          name: null,
+        };
+      }
+      fiberState.set(fiber, state);
+      if (fiber.alternate) fiberState.set(fiber.alternate, state);
+
+      // Keep id/name stable across edges. Refresh whenever we can resolve
+      // a real DevTools id (they only become available after
+      // flushInitialOperations populates the fiber->id map).
+      if (state.elementID == null) {
+        const id = findFiberElementID(fiber, rendererID);
+        if (id != null) {
+          state.elementID = id;
+          const ri = getRi(rendererID);
+          try {
+            if (ri && typeof ri.getDisplayNameForElementID === "function") {
+              state.name = ri.getDisplayNameForElementID(id) || state.name;
+            }
+          } catch {}
+        }
+      }
+      if (!state.name) {
+        state.name = findBoundaryDisplayName(fiber);
+      }
+
+      const eventID =
+        state.elementID != null ? state.elementID : state.syntheticID;
+
+      if (isSuspended && !state.suspended) {
+        const inspect = state.elementID != null
+          ? inspectBoundary(fiber, rendererID)
+          : { elementID: null, data: null };
+        appendEvent({
+          t: Math.round(t * 100) / 100,
+          id: eventID,
+          name: state.name,
+          event: "suspended",
+          environments:
+            inspect.data && Array.isArray(inspect.data.owners)
+              ? Array.from(
+                  new Set(
+                    inspect.data.owners.map((o) => o.env).filter((e) => !!e)
+                  )
+                )
+              : [],
+          suspendedBy: (inspect.data && inspect.data.suspendedBy) || [],
+          unknownSuspenders:
+            (inspect.data && inspect.data.unknownSuspenders) || null,
+          owners: (inspect.data && inspect.data.owners) || [],
+          jsxSource: (inspect.data && inspect.data.jsxSource) || null,
+        });
+        state.suspended = true;
+        state.startT = t;
+      } else if (!isSuspended && state.suspended) {
+        const duration =
+          state.startT != null
+            ? Math.round((t - state.startT) * 100) / 100
+            : null;
+        appendEvent({
+          t: Math.round(t * 100) / 100,
+          id: eventID,
+          name: state.name,
+          event: "resolved",
+          durationMs: duration,
+        });
+        state.suspended = false;
+        state.startT = null;
       }
     }
   }
 
-  function parseStack(raw) {
-    if (!Array.isArray(raw) || raw.length === 0) return null;
-    return raw
-      .filter((f) => Array.isArray(f) && f.length >= 4)
-      .map((f) => [f[0] || "", f[1] || "", f[2] || 0, f[3] || 0]);
+  // Call flushInitialOperations once (on first commit or at setup) to
+  // populate the backend's fiber -> element-id map so subsequent
+  // `getSuspenseNodeIDForHostInstance` / `inspectElement` calls succeed.
+  let flushedInitial = false;
+  function ensureFlushed(rendererID) {
+    if (flushedInitial) return;
+    try {
+      const ri = getRi(rendererID);
+      if (ri && typeof ri.flushInitialOperations === "function") {
+        ri.flushInitialOperations();
+        flushedInitial = true;
+      }
+    } catch {}
   }
 
-  function preview(v) {
-    if (v == null) return "";
-    if (typeof v === "string") return v;
-    if (typeof v !== "object") return String(v);
-    if (typeof v.preview_long === "string") return v.preview_long;
-    if (typeof v.preview_short === "string") return v.preview_short;
-    if (typeof v.value === "string") return v.value;
-    try {
-      const s = JSON.stringify(v);
-      return s.length > 80 ? s.slice(0, 77) + "..." : s;
-    } catch {
-      return "";
-    }
+  function hookOnCommit() {
+    const orig = hook.onCommitFiberRoot;
+    hook.onCommitFiberRoot = function (rendererID, root) {
+      // Run our commit() *before* calling through — the original commit
+      // handler in some React DevTools builds mutates memoizedState as
+      // part of its bookkeeping (via measureUnchangedSuspenseNodes /
+      // recordSuspenseResize), and we want the fiber tree in its true
+      // committed shape.
+      try {
+        ensureFlushed(rendererID);
+      } catch {}
+      try {
+        commit(rendererID, root);
+      } catch {}
+      let ret;
+      try {
+        ret = orig && orig.apply(this, arguments);
+      } catch (e) {}
+      return ret;
+    };
   }
+  hookOnCommit();
+
+  window.__AB_SUSPENSE_LOG_READ__ = function (clear) {
+    const snapshot = {
+      events: log.events.slice(),
+      overflowed: log.overflowed,
+      startedAt: log.startedAt,
+      bufferCapacity: CAP,
+    };
+    if (clear) {
+      log.events.length = 0;
+      log.overflowed = false;
+      log.startedAt = performance.now();
+    }
+    return JSON.stringify(snapshot);
+  };
 })()
 "#;
 

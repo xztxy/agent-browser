@@ -1697,10 +1697,10 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
 }
 
 fn parse_react(rest: &[&str], id: &str) -> Result<Value, ParseError> {
-    const VALID: &[&str] = &["tree", "inspect", "renders", "suspense"];
+    const VALID: &[&str] = &["tree", "inspect", "renders", "suspense", "suspense-log"];
     let sub = rest.first().copied().ok_or(ParseError::MissingArguments {
         context: "react".to_string(),
-        usage: "react <tree|inspect|renders|suspense>",
+        usage: "react <tree|inspect|renders|suspense|suspense-log>",
     })?;
     let json_out = rest.contains(&"--json");
     let flag = |key: &str| -> Value {
@@ -1751,6 +1751,20 @@ fn parse_react(rest: &[&str], id: &str) -> Result<Value, ParseError> {
             }
             if only_dynamic {
                 cmd["onlyDynamic"] = json!(true);
+            }
+            Ok(cmd)
+        }
+        "suspense-log" | "suspense_log" => {
+            let clear = rest.contains(&"--clear");
+            let no_sm = rest.contains(&"--no-source-maps");
+            let mut cmd = json!({
+                "id": id,
+                "action": "suspense_log",
+                "clear": clear,
+                "sourceMaps": !no_sm,
+            });
+            if json_out {
+                cmd["json"] = json!(true);
             }
             Ok(cmd)
         }
@@ -2921,6 +2935,56 @@ mod tests {
         assert_eq!(cmd["action"], "react_suspense");
         assert_eq!(cmd["onlyDynamic"], true);
         assert_eq!(cmd["json"], true);
+    }
+
+    #[test]
+    fn react_suspense_log_parses() {
+        let cmd = parse_command(&args("react suspense-log"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "suspense_log");
+        assert_eq!(cmd["clear"], false);
+        assert_eq!(cmd["sourceMaps"], true);
+        assert!(cmd.get("json").is_none());
+    }
+
+    #[test]
+    fn react_suspense_log_clear_parses() {
+        let cmd = parse_command(&args("react suspense-log --clear"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "suspense_log");
+        assert_eq!(cmd["clear"], true);
+    }
+
+    #[test]
+    fn react_suspense_log_json_parses() {
+        let cmd = parse_command(&args("react suspense-log --json"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "suspense_log");
+        assert_eq!(cmd["json"], true);
+    }
+
+    #[test]
+    fn react_suspense_log_no_source_maps_parses() {
+        let cmd =
+            parse_command(&args("react suspense-log --no-source-maps"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "suspense_log");
+        assert_eq!(cmd["sourceMaps"], false);
+    }
+
+    #[test]
+    fn react_suspense_log_underscore_alias_parses() {
+        let cmd = parse_command(&args("react suspense_log"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "suspense_log");
+    }
+
+    #[test]
+    fn react_suspense_log_all_flags_parses() {
+        let cmd = parse_command(
+            &args("react suspense-log --clear --json --no-source-maps"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "suspense_log");
+        assert_eq!(cmd["clear"], true);
+        assert_eq!(cmd["json"], true);
+        assert_eq!(cmd["sourceMaps"], false);
     }
 
     #[test]

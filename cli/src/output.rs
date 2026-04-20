@@ -340,6 +340,17 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             print_with_boundaries(&formatted, origin, opts);
             return;
         }
+        // Pre-formatted markdown report (react suspense / suspense-log /
+        // renders / vitals — any handler that returns { "report": "..." }).
+        if let Some(report) = data.get("report").and_then(|v| v.as_str()) {
+            print_with_boundaries(report, origin, opts);
+            return;
+        }
+        // Pre-formatted tree string (react tree).
+        if let Some(tree) = data.get("tree").and_then(|v| v.as_str()) {
+            print_with_boundaries(tree, origin, opts);
+            return;
+        }
         // iOS Devices
         if let Some(devices) = data.get("devices").and_then(|v| v.as_array()) {
             if devices.is_empty() {
